@@ -1,0 +1,12 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    { "label": "Backend build", "type": "shell", "command": "cargo build", "options": { "cwd": "${workspaceFolder}/backend" }, "problemMatcher": ["$rustc"], "group": "build" },
+    { "label": "Backend test", "type": "shell", "command": "cargo test", "options": { "cwd": "${workspaceFolder}/backend" }, "problemMatcher": ["$rustc"], "group": "test" },
+    { "label": "Backend clippy", "type": "shell", "command": "cargo clippy --all-targets -- -D warnings", "options": { "cwd": "${workspaceFolder}/backend" }, "problemMatcher": ["$rustc"] },
+    { "label": "Frontend install", "type": "shell", "command": "npm.cmd install", "options": { "cwd": "${workspaceFolder}/frontend" }, "problemMatcher": [] },
+    { "label": "Frontend check", "type": "shell", "command": "npm.cmd run check", "options": { "cwd": "${workspaceFolder}/frontend" }, "problemMatcher": ["$tsc"] },
+    { "label": "Start application", "type": "shell", "command": "./scripts/start.ps1", "problemMatcher": [] },
+    { "label": "Check all", "dependsOrder": "sequence", "dependsOn": ["Backend build", "Backend test", "Backend clippy", "Frontend check"], "problemMatcher": [] }
+  ]
+}

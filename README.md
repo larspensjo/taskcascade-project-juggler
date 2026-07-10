@@ -1,2 +1,23 @@
-# taskcascade-project-juggler
-A lightweight personal project coordination tool for developers. Organize work as a single prioritized task stack, quickly reorder tasks with drag-and-drop or keyboard shortcuts, and keep rich Markdown notes and scratchpads—all with immediate local persistence and zero unnecessary complexity.
+# TaskCascade
+
+TaskCascade is a lightweight, personal coordination tool for developers: one ordered task stack, rapid reprioritisation, and Markdown notes that persist immediately to a local SQLite database.
+
+## Run locally
+
+Prerequisites: a current Rust toolchain and Node.js/npm.
+
+```powershell
+./scripts/start.ps1
+```
+
+The development UI opens at `http://127.0.0.1:5173`; the local API runs at port 8080. Development data goes to `.local/data`. For a standalone backend, set `TASKCASCADE_DATA_DIR` to choose the SQLite directory; otherwise it uses `Documents/TaskCascade`.
+
+## MVP features
+
+- One globally ordered active task list, with drag-and-drop and keyboard reordering
+- Projects, filters, instant task editing, and Markdown description/scratchpad previews
+- Completion to a read-only searchable archive
+- Search across task titles, descriptions, scratchpads, active work, and archive
+- Immediate local persistence and restoration of the project filter
+
+See [the requirements](docs/RequirementSpecification.md), [architecture](docs/Design.HighLevel.md), and [decision log](docs/DecisionLog.md).

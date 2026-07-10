@@ -1,0 +1,778 @@
+import {
+  Archive,
+  Check,
+  FileText,
+  GripVertical,
+  Plus,
+  Search,
+  X,
+} from "lucide-react";
+import {
+  type DragEvent,
+  type FormEvent,
+  type RefObject,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { type Bootstrap, type Project, type Task, api } from "./api";
+
+type View = "active" | "archive" | "search";
+type EditorTab = "description" | "scratchpad";
+const ALL_PROJECTS = "all";
+
+export function App() {
+  const [data, setData] = useState<Bootstrap | null>(null);
+  const [view, setView] = useState<View>("active");
+  const [filter, setFilter] = useState(ALL_PROJECTS);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<Task[]>([]);
+  const [newTaskOpen, setNewTaskOpen] = useState(false);
+  const [projectOpen, setProjectOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const titleRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    api
+      .bootstrap()
+      .then((boot) => {
+        setData(boot);
+        const savedFilter = boot.preferences.find(
+          (preference) => preference.key === "projectFilter",
+        )?.value;
+        if (
+          savedFilter &&
+          (savedFilter === ALL_PROJECTS ||
+            boot.projects.some((project) => project.id === savedFilter))
+        )
+          setFilter(savedFilter);
+        setSelectedId(boot.activeTasks[0]?.id ?? null);
+      })
+      .catch(showError);
+  }, []);
+
+  useEffect(() => {
+    if (!query.trim()) {
+      setResults([]);
+      return;
+    }
+    const timer = window.setTimeout(
+      () => api.search(query).then(setResults).catch(showError),
+      180,
+    );
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  const showError = (reason: unknown) =>
+    setError(
+      reason instanceof Error ? reason.message : "Something went wrong.",
+    );
+  const active = data?.activeTasks ?? [];
+  const archived = data?.archivedTasks ?? [];
+  const visibleTasks = useMemo(() => {
+    const source =
+      view === "archive" ? archived : view === "search" ? results : active;
+    return filter === ALL_PROJECTS
+      ? source
+      : source.filter((task) => task.projectId === filter);
+  }, [active, archived, filter, results, view]);
+  const selected =
+    [...active, ...archived].find((task) => task.id === selectedId) ??
+    visibleTasks[0] ??
+    null;
+
+  useEffect(() => {
+    if (selected && !visibleTasks.some((task) => task.id === selected.id))
+      setSelectedId(visibleTasks[0]?.id ?? null);
+  }, [selected, visibleTasks]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.ctrlKey && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        setNewTaskOpen(true);
+      }
+      if (event.ctrlKey && event.key.toLowerCase() === "f") {
+        event.preventDefault();
+        searchRef.current?.focus();
+      }
+      if (event.key === "Escape") {
+        setNewTaskOpen(false);
+        setProjectOpen(false);
+        setQuery("");
+        if (query) setView("active");
+      }
+      if (
+        event.key === "Enter" &&
+        !isEditingTarget(event.target) &&
+        selected &&
+        view !== "archive"
+      ) {
+        event.preventDefault();
+        titleRef.current?.focus();
+      }
+      if (
+        event.key === "Delete" &&
+        !isEditingTarget(event.target) &&
+        selected &&
+        view === "active"
+      ) {
+        event.preventDefault();
+        complete(selected);
+      }
+      if (
+        event.ctrlKey &&
+        (event.key === "ArrowUp" || event.key === "ArrowDown") &&
+        selected &&
+        view === "active"
+      ) {
+        event.preventDefault();
+        const index = visibleTasks.findIndex((task) => task.id === selected.id);
+        const target = visibleTasks[index + (event.key === "ArrowUp" ? -1 : 1)];
+        if (target) reorder(selected, target, event.key === "ArrowDown");
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [query, selected, view, visibleTasks]);
+
+  async function changeFilter(next: string) {
+    setFilter(next);
+    setView("active");
+    try {
+      await api.savePreference("projectFilter", next);
+    } catch (reason) {
+      showError(reason);
+    }
+  }
+  async function createProject(name: string) {
+    try {
+      const project = await api.createProject(name);
+      setData(
+        (current) =>
+          current && {
+            ...current,
+            projects: [...current.projects, project].sort((a, b) =>
+              a.name.localeCompare(b.name),
+            ),
+          },
+      );
+      setFilter(project.id);
+      setProjectOpen(false);
+    } catch (reason) {
+      showError(reason);
+    }
+  }
+  async function createTask(input: {
+    title: string;
+    projectId: string;
+    description?: string;
+  }) {
+    try {
+      const task = await api.createTask(input);
+      setData(
+        (current) =>
+          current && {
+            ...current,
+            activeTasks: [task, ...current.activeTasks],
+          },
+      );
+      setView("active");
+      setSelectedId(task.id);
+      setNewTaskOpen(false);
+    } catch (reason) {
+      showError(reason);
+    }
+  }
+  async function updateTask(updated: Task) {
+    try {
+      const task = await api.updateTask(updated.id, updated);
+      setData(
+        (current) =>
+          current && {
+            ...current,
+            activeTasks: current.activeTasks.map((item) =>
+              item.id === task.id ? task : item,
+            ),
+          },
+      );
+    } catch (reason) {
+      showError(reason);
+    }
+  }
+  async function complete(task: Task) {
+    try {
+      const completed = await api.completeTask(task.id);
+      setData(
+        (current) =>
+          current && {
+            ...current,
+            activeTasks: current.activeTasks.filter(
+              (item) => item.id !== task.id,
+            ),
+            archivedTasks: [completed, ...current.archivedTasks],
+          },
+      );
+      setSelectedId(null);
+    } catch (reason) {
+      showError(reason);
+    }
+  }
+  async function reorder(task: Task, target: Task, after: boolean) {
+    try {
+      const order = await api.reorderTask(task.id, target.id, after);
+      setData(
+        (current) =>
+          current && {
+            ...current,
+            activeTasks: order.flatMap((id) => {
+              const task = current.activeTasks.find((item) => item.id === id);
+              return task ? [task] : [];
+            }),
+          },
+      );
+    } catch (reason) {
+      showError(reason);
+    }
+  }
+  function runSearch(value: string) {
+    setQuery(value);
+    setView(value.trim() ? "search" : "active");
+  }
+
+  if (!data) return <main className="loading">Opening your task stack…</main>;
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand">
+          <span className="brand-mark">↗</span>
+          <span>TaskCascade</span>
+        </div>
+        <label className="search">
+          <Search size={16} />
+          <input
+            ref={searchRef}
+            value={query}
+            onChange={(event) => runSearch(event.target.value)}
+            placeholder="Search tasks…"
+          />
+          <kbd>Ctrl F</kbd>
+        </label>
+        <button
+          type="button"
+          className="primary"
+          onClick={() => setNewTaskOpen(true)}
+        >
+          <Plus size={17} />
+          New task <kbd>Ctrl N</kbd>
+        </button>
+      </header>
+      <div className="workspace">
+        <aside className="sidebar">
+          <div className="sidebar-heading">WORKSPACE</div>
+          <button
+            type="button"
+            className={
+              view === "active" && filter === ALL_PROJECTS
+                ? "nav-item active"
+                : "nav-item"
+            }
+            onClick={() => {
+              setView("active");
+              changeFilter(ALL_PROJECTS);
+            }}
+          >
+            <FileText size={16} />
+            All tasks <span>{active.length}</span>
+          </button>
+          <div className="sidebar-heading with-action">
+            PROJECTS{" "}
+            <button
+              type="button"
+              aria-label="Add project"
+              onClick={() => setProjectOpen(true)}
+            >
+              <Plus size={15} />
+            </button>
+          </div>
+          {data.projects.map((project) => (
+            <button
+              type="button"
+              key={project.id}
+              className={
+                view === "active" && filter === project.id
+                  ? "nav-item active"
+                  : "nav-item"
+              }
+              onClick={() => changeFilter(project.id)}
+            >
+              <span className="project-dot" />
+              {project.name}
+              <span>
+                {active.filter((task) => task.projectId === project.id).length}
+              </span>
+            </button>
+          ))}
+          <div className="sidebar-spacer" />
+          <button
+            type="button"
+            className={view === "archive" ? "nav-item active" : "nav-item"}
+            onClick={() => {
+              setView("archive");
+              setQuery("");
+            }}
+          >
+            <Archive size={16} />
+            Archive <span>{archived.length}</span>
+          </button>
+        </aside>
+        <section className="task-pane">
+          <div className="pane-heading">
+            <div>
+              <span className="eyebrow">
+                {view === "archive"
+                  ? "Completed work"
+                  : view === "search"
+                    ? "Search results"
+                    : filter === ALL_PROJECTS
+                      ? "Your ordered stack"
+                      : data.projects.find((project) => project.id === filter)
+                          ?.name}
+              </span>
+              <h1>
+                {view === "archive"
+                  ? "Archive"
+                  : view === "search"
+                    ? `Results for “${query}”`
+                    : "What’s next"}
+              </h1>
+            </div>
+            <span className="count">{visibleTasks.length}</span>
+          </div>
+          <TaskList
+            tasks={visibleTasks}
+            selectedId={selected?.id ?? null}
+            projects={data.projects}
+            canReorder={view === "active"}
+            onSelect={(task) => setSelectedId(task.id)}
+            onComplete={complete}
+            onReorder={reorder}
+          />
+        </section>
+        <section className="detail-pane">
+          {selected ? (
+            <TaskEditor
+              key={selected.id}
+              task={selected}
+              projects={data.projects}
+              archived={selected.completedAt !== null}
+              onUpdate={updateTask}
+              onComplete={complete}
+              titleRef={titleRef}
+            />
+          ) : (
+            <div className="empty-detail">
+              <Check size={28} />
+              <h2>Nothing selected</h2>
+              <p>Create a task or choose one from the stack.</p>
+            </div>
+          )}
+        </section>
+      </div>
+      {error && (
+        <div className="toast" role="alert">
+          {error}
+          <button type="button" onClick={() => setError(null)}>
+            <X size={16} />
+          </button>
+        </div>
+      )}
+      {newTaskOpen && (
+        <NewTaskDialog
+          projects={data.projects}
+          initialProject={
+            filter === ALL_PROJECTS ? data.projects[0]?.id : filter
+          }
+          onCreate={createTask}
+          onClose={() => setNewTaskOpen(false)}
+        />
+      )}
+      {projectOpen && (
+        <ProjectDialog
+          onCreate={createProject}
+          onClose={() => setProjectOpen(false)}
+        />
+      )}
+    </main>
+  );
+}
+
+function TaskList({
+  tasks,
+  selectedId,
+  projects,
+  canReorder,
+  onSelect,
+  onComplete,
+  onReorder,
+}: {
+  tasks: Task[];
+  selectedId: string | null;
+  projects: Project[];
+  canReorder: boolean;
+  onSelect: (task: Task) => void;
+  onComplete: (task: Task) => void;
+  onReorder: (task: Task, target: Task, after: boolean) => void;
+}) {
+  const [dragged, setDragged] = useState<Task | null>(null);
+  if (!tasks.length)
+    return (
+      <div className="empty-list">
+        <FileText size={24} />
+        <h2>No tasks here</h2>
+        <p>Capture the next useful piece of work.</p>
+      </div>
+    );
+  const drop = (event: DragEvent, target: Task) => {
+    event.preventDefault();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    const after = event.clientY > bounds.top + bounds.height / 2;
+    if (dragged && dragged.id !== target.id) onReorder(dragged, target, after);
+    setDragged(null);
+  };
+  return (
+    <ol className="task-list">
+      {tasks.map((task, index) => (
+        <li
+          key={task.id}
+          className={selectedId === task.id ? "task-row selected" : "task-row"}
+          draggable={canReorder}
+          onDragStart={() => setDragged(task)}
+          onDragOver={(event) => event.preventDefault()}
+          onDrop={(event) => drop(event, task)}
+        >
+          <button
+            type="button"
+            className="task-select"
+            onClick={() => onSelect(task)}
+          >
+            <span className="task-order">{index + 1}</span>
+            {canReorder && <GripVertical className="grab" size={17} />}
+            <span className="task-copy">
+              <strong>{task.title}</strong>
+              <span>
+                {projects.find((project) => project.id === task.projectId)
+                  ?.name ?? "Unknown project"}
+              </span>
+            </span>
+          </button>
+          {canReorder && (
+            <button
+              type="button"
+              className="complete"
+              onClick={(event) => {
+                event.stopPropagation();
+                onComplete(task);
+              }}
+              aria-label={`Complete ${task.title}`}
+            >
+              <Check size={16} />
+            </button>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function TaskEditor({
+  task,
+  projects,
+  archived,
+  onUpdate,
+  onComplete,
+  titleRef,
+}: {
+  task: Task;
+  projects: Project[];
+  archived: boolean;
+  onUpdate: (task: Task) => void;
+  onComplete: (task: Task) => void;
+  titleRef: RefObject<HTMLInputElement | null>;
+}) {
+  const [draft, setDraft] = useState(task);
+  const [tab, setTab] = useState<EditorTab>("description");
+  const [preview, setPreview] = useState(false);
+  const saveTimer = useRef<number | undefined>(undefined);
+  function change(patch: Partial<Task>) {
+    const next = { ...draft, ...patch };
+    setDraft(next);
+    window.clearTimeout(saveTimer.current);
+    saveTimer.current = window.setTimeout(() => onUpdate(next), 450);
+  }
+  useEffect(() => () => window.clearTimeout(saveTimer.current), []);
+  const content = tab === "description" ? draft.description : draft.scratchpad;
+  return (
+    <div className="editor">
+      <div className="editor-meta">
+        <span>
+          {archived
+            ? `Completed ${formatDate(task.completedAt ?? task.modifiedAt)}`
+            : `Updated ${formatDate(task.modifiedAt)}`}
+        </span>
+        {!archived && (
+          <button
+            type="button"
+            className="complete-text"
+            onClick={() => onComplete(task)}
+          >
+            <Check size={15} />
+            Complete
+          </button>
+        )}
+      </div>
+      {archived ? (
+        <>
+          <h1>{task.title}</h1>
+          <div className="tag">
+            {projects.find((project) => project.id === task.projectId)?.name}
+          </div>
+          <ReadOnlySection title="Description" value={task.description} />
+          <ReadOnlySection title="Scratchpad" value={task.scratchpad} />
+        </>
+      ) : (
+        <>
+          <input
+            ref={titleRef}
+            className="title-input"
+            value={draft.title}
+            onChange={(event) => change({ title: event.target.value })}
+            aria-label="Task title"
+          />
+          <label className="project-select">
+            Project
+            <select
+              value={draft.projectId}
+              onChange={(event) => change({ projectId: event.target.value })}
+            >
+              {projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="editor-tabs">
+            <button
+              type="button"
+              className={tab === "description" ? "active" : ""}
+              onClick={() => setTab("description")}
+            >
+              Description
+            </button>
+            <button
+              type="button"
+              className={tab === "scratchpad" ? "active" : ""}
+              onClick={() => setTab("scratchpad")}
+            >
+              Scratchpad
+            </button>
+            <span />
+            <button
+              type="button"
+              className="preview-toggle"
+              onClick={() => setPreview(!preview)}
+            >
+              {preview ? "Write" : "Preview"}
+            </button>
+          </div>
+          {preview ? (
+            <Markdown value={content} empty={`No ${tab} yet.`} />
+          ) : (
+            <textarea
+              value={content}
+              onChange={(event) =>
+                change(
+                  tab === "description"
+                    ? { description: event.target.value }
+                    : { scratchpad: event.target.value },
+                )
+              }
+              placeholder={
+                tab === "description"
+                  ? "Goals, requirements, links…"
+                  : "Notes, investigation, snippets, future ideas…"
+              }
+            />
+          )}
+          <p className="autosave">Saved automatically · Markdown supported</p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ReadOnlySection({ title, value }: { title: string; value: string }) {
+  return (
+    <section className="readonly-section">
+      <h2>{title}</h2>
+      <Markdown value={value} empty={`No ${title.toLowerCase()} was saved.`} />
+    </section>
+  );
+}
+function Markdown({ value, empty }: { value: string; empty: string }) {
+  return (
+    <div className={value.trim() ? "markdown" : "markdown empty-markdown"}>
+      {value.trim() ? (
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{value}</ReactMarkdown>
+      ) : (
+        empty
+      )}
+    </div>
+  );
+}
+function NewTaskDialog({
+  projects,
+  initialProject,
+  onCreate,
+  onClose,
+}: {
+  projects: Project[];
+  initialProject?: string;
+  onCreate: (input: {
+    title: string;
+    projectId: string;
+    description?: string;
+  }) => void;
+  onClose: () => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [projectId, setProjectId] = useState(initialProject ?? "");
+  const [description, setDescription] = useState("");
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (title.trim() && projectId) onCreate({ title, projectId, description });
+  }
+  return (
+    <Dialog title="New task" onClose={onClose}>
+      <form onSubmit={submit}>
+        <label>
+          Title
+          <input
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            placeholder="What needs your attention?"
+          />
+        </label>
+        <label>
+          Project
+          <select
+            value={projectId}
+            onChange={(event) => setProjectId(event.target.value)}
+          >
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Description <span className="optional">optional</span>
+          <textarea
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="A little context helps future you."
+          />
+        </label>
+        <div className="dialog-actions">
+          <button type="button" className="secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="primary"
+            disabled={!title.trim() || !projectId}
+          >
+            Create task
+          </button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+function ProjectDialog({
+  onCreate,
+  onClose,
+}: { onCreate: (name: string) => void; onClose: () => void }) {
+  const [name, setName] = useState("");
+  return (
+    <Dialog title="New project" onClose={onClose}>
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (name.trim()) onCreate(name);
+        }}
+      >
+        <label>
+          Name
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="e.g. Engine"
+          />
+        </label>
+        <div className="dialog-actions">
+          <button type="button" className="secondary" onClick={onClose}>
+            Cancel
+          </button>
+          <button type="submit" className="primary" disabled={!name.trim()}>
+            Create project
+          </button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
+function Dialog({
+  title,
+  children,
+  onClose,
+}: { title: string; children: React.ReactNode; onClose: () => void }) {
+  return (
+    <div className="dialog-backdrop" onMouseDown={onClose}>
+      <dialog
+        open
+        className="dialog"
+        aria-label={title}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <div className="dialog-header">
+          <h2>{title}</h2>
+          <button type="button" onClick={onClose} aria-label="Close">
+            <X size={18} />
+          </button>
+        </div>
+        {children}
+      </dialog>
+    </div>
+  );
+}
+function formatDate(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  }).format(new Date(value));
+}
+function isEditingTarget(target: EventTarget | null) {
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement
+  );
+}
