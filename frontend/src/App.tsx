@@ -1,5 +1,6 @@
 import {
   Archive,
+  ArchiveRestore,
   Check,
   FileText,
   GripVertical,
@@ -223,6 +224,25 @@ export function App() {
       showError(reason);
     }
   }
+  async function restore(task: Task) {
+    try {
+      const restored = await api.restoreTask(task.id);
+      setData(
+        (current) =>
+          current && {
+            ...current,
+            activeTasks: [restored, ...current.activeTasks],
+            archivedTasks: current.archivedTasks.filter(
+              (item) => item.id !== task.id,
+            ),
+          },
+      );
+      setView("active");
+      setSelectedId(restored.id);
+    } catch (reason) {
+      showError(reason);
+    }
+  }
   async function reorder(task: Task, target: Task, after: boolean) {
     try {
       const order = await api.reorderTask(task.id, target.id, after);
@@ -373,6 +393,7 @@ export function App() {
               archived={selected.completedAt !== null}
               onUpdate={updateTask}
               onComplete={complete}
+              onRestore={restore}
               titleRef={titleRef}
             />
           ) : (
@@ -496,6 +517,7 @@ function TaskEditor({
   archived,
   onUpdate,
   onComplete,
+  onRestore,
   titleRef,
 }: {
   task: Task;
@@ -503,6 +525,7 @@ function TaskEditor({
   archived: boolean;
   onUpdate: (task: Task) => void;
   onComplete: (task: Task) => void;
+  onRestore: (task: Task) => void;
   titleRef: RefObject<HTMLInputElement | null>;
 }) {
   const [draft, setDraft] = useState(task);
@@ -525,7 +548,16 @@ function TaskEditor({
             ? `Completed ${formatDate(task.completedAt ?? task.modifiedAt)}`
             : `Updated ${formatDate(task.modifiedAt)}`}
         </span>
-        {!archived && (
+        {archived ? (
+          <button
+            type="button"
+            className="complete-text"
+            onClick={() => onRestore(task)}
+          >
+            <ArchiveRestore size={15} />
+            Restore to stack
+          </button>
+        ) : (
           <button
             type="button"
             className="complete-text"

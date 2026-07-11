@@ -36,3 +36,9 @@ Consequences: Reorder operations are relative moves inside the global list. A fi
 Decision: Completing a task timestamps it and removes it from the active stack; the archived task remains searchable but cannot be edited or restored in the MVP.
 Context: Completion should be fast while preserving useful history and scratchpad context.
 Consequences: The data model retains all task fields and timestamps. Restore and archive mutations remain explicitly post-MVP work.
+
+## 2026-07-11 — Archived tasks can be restored to the stack
+
+Decision: An archived task can be restored to the top of the active stack. This supersedes the no-restore portion of the 2026-07-10 "Completion creates a read-only archive" decision; the rest of that decision stands.
+Context: Completed tasks sometimes need to come back — a piece of work turns out to be unfinished, or is repeated. Viewing the archive already existed; only the restore action was missing.
+Consequences: Restore is a lifecycle action, not field editing — archived task content stays read-only. Restoring clears `completed_at` (an active task has no completion timestamp), so no completion history is retained across a restore; tasks that remain in the archive keep all their timestamps. Retaining completion history is still future work ("Task history").

@@ -54,6 +54,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tasks", post(create_task))
         .route("/api/tasks/{id}", put(update_task))
         .route("/api/tasks/{id}/complete", post(complete_task))
+        .route("/api/tasks/{id}/restore", post(restore_task))
         .route("/api/tasks/{id}/reorder", post(reorder_task))
         .route("/api/preferences/{key}", put(save_preference))
         .fallback_service(ServeDir::new("../frontend/dist"))
@@ -255,6 +256,30 @@ async fn complete_task(
     if result.rows_affected() == 0 {
         return Err(ApiError::not_found());
     }
+    let task = sqlx::query_as::<_, Task>("SELECT id, title, description, scratchpad, project_id, position, created_at, modified_at, completed_at FROM tasks WHERE id = ?")
+        .bind(id).fetch_one(state.0.as_ref()).await?;
+    Ok(Json(task))
+}
+
+async fn restore_task(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<Task>, ApiError> {
+    let mut tx = state.0.begin().await?;
+    sqlx::query("UPDATE tasks SET position = position + 1 WHERE completed_at IS NULL")
+        .execute(&mut *tx)
+        .await?;
+    let result = sqlx::query(
+        "UPDATE tasks SET completed_at = NULL, position = 0, modified_at = ? WHERE id = ? AND completed_at IS NOT NULL",
+    )
+    .bind(now())
+    .bind(&id)
+    .execute(&mut *tx)
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(ApiError::not_found());
+    }
+    tx.commit().await?;
     let task = sqlx::query_as::<_, Task>("SELECT id, title, description, scratchpad, project_id, position, created_at, modified_at, completed_at FROM tasks WHERE id = ?")
         .bind(id).fetch_one(state.0.as_ref()).await?;
     Ok(Json(task))

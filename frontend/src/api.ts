@@ -56,6 +56,8 @@ export const api = {
     }),
   completeTask: (id: string) =>
     request<Task>(`/tasks/${id}/complete`, { method: "POST" }),
+  restoreTask: (id: string) =>
+    request<Task>(`/tasks/${id}/restore`, { method: "POST" }),
   reorderTask: (id: string, targetTaskId: string | null, after: boolean) =>
     request<string[]>(`/tasks/${id}/reorder`, {
       method: "POST",

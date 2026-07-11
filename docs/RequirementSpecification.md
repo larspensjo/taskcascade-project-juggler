@@ -113,7 +113,7 @@ The archive preserves:
 - Description
 - Scratchpad
 - Project
-- All timestamps
+- All timestamps (for tasks that remain archived; restoring a task clears its completed timestamp)
 
 ---
 
@@ -184,9 +184,9 @@ Support should include:
 
 Completed tasks are searchable.
 
-The archive is read-only.
+Archived task fields are read-only.
 
-Future versions may allow restoring archived tasks.
+An archived task can be restored to the top of the active stack. Restoring clears its completed timestamp as it re-enters the active list.
 
 ---
 
@@ -292,7 +292,6 @@ No server required.
 # Future Ideas (Not MVP)
 
 - Task dependencies
-- Task restore from archive
 - Multiple ordered stacks
 - Tags
 - Favorites
