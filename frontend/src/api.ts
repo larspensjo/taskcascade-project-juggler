@@ -1,4 +1,9 @@
-export type Project = { id: string; name: string; createdAt: string };
+export type Project = {
+  id: string;
+  name: string;
+  color: string;
+  createdAt: string;
+};
 export type Task = {
   id: string;
   title: string;
@@ -36,10 +41,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   bootstrap: () => request<Bootstrap>("/bootstrap"),
   search: (q: string) => request<Task[]>(`/search?q=${encodeURIComponent(q)}`),
-  createProject: (name: string) =>
+  createProject: (name: string, color?: string) =>
     request<Project>("/projects", {
       method: "POST",
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, color }),
+    }),
+  updateProject: (id: string, body: { name: string; color: string }) =>
+    request<Project>(`/projects/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
     }),
   createTask: (body: {
     title: string;

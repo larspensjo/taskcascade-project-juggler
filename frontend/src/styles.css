@@ -195,7 +195,50 @@ select:focus-visible {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent-link);
+  flex-shrink: 0;
+  background: var(--project-color, var(--accent-link));
+}
+.project-row {
+  display: flex;
+  align-items: center;
+}
+.project-row .nav-item {
+  flex: 1;
+  min-width: 0;
+  background: color-mix(
+    in srgb,
+    var(--project-color, transparent) 7%,
+    transparent
+  );
+}
+.project-row .nav-item:hover {
+  background: color-mix(
+    in srgb,
+    var(--project-color, transparent) 14%,
+    var(--surface-2)
+  );
+}
+.project-row .nav-item.active {
+  background: rgba(0, 82, 255, 0.16);
+}
+.edit-project {
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  border-radius: 6px;
+  padding: 4px;
+  margin-left: 2px;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+}
+.project-row:hover .edit-project,
+.edit-project:focus-visible {
+  opacity: 1;
+}
+.edit-project:hover {
+  background: var(--surface-2);
+  color: var(--text-primary);
 }
 .sidebar-spacer {
   flex: 1;
@@ -239,12 +282,18 @@ select:focus-visible {
   min-height: 61px;
   border: 1px solid transparent;
   border-bottom-color: var(--hairline-soft);
+  border-left: 3px solid var(--project-color, transparent);
   border-radius: 8px;
   display: flex;
   align-items: center;
   gap: 7px;
   padding: 7px;
   cursor: pointer;
+  background: color-mix(
+    in srgb,
+    var(--project-color, transparent) 7%,
+    transparent
+  );
 }
 .task-select {
   border: 0;
@@ -259,11 +308,20 @@ select:focus-visible {
   text-align: left;
 }
 .task-row:hover {
-  background: var(--surface-1);
+  background: color-mix(
+    in srgb,
+    var(--project-color, transparent) 10%,
+    var(--surface-1)
+  );
 }
 .task-row.selected {
-  background: var(--surface-2);
+  background: color-mix(
+    in srgb,
+    var(--project-color, transparent) 10%,
+    var(--surface-2)
+  );
   border-color: var(--hairline);
+  border-left-color: var(--project-color, var(--hairline));
 }
 .task-order {
   font: 11px "JetBrains Mono", monospace;
@@ -548,6 +606,27 @@ select:focus-visible {
 .optional {
   color: var(--text-muted);
   font-weight: 400;
+}
+.color-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.color-field input {
+  width: 92px;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+}
+.swatch {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  padding: 0;
+}
+.swatch.selected {
+  border-color: var(--text-primary);
 }
 .dialog-actions {
   display: flex;

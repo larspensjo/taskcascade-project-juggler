@@ -4,11 +4,13 @@ import {
   Check,
   FileText,
   GripVertical,
+  Pencil,
   Plus,
   Search,
   X,
 } from "lucide-react";
 import {
+  type CSSProperties,
   type DragEvent,
   type FormEvent,
   type RefObject,
@@ -24,6 +26,23 @@ import { type Bootstrap, type Project, type Task, api } from "./api";
 type View = "active" | "archive" | "search";
 type EditorTab = "description" | "scratchpad";
 const ALL_PROJECTS = "all";
+// Mirrors the backend's default palette so the dialog swatches match
+// what auto-assignment produces.
+const PALETTE = [
+  "#e8833a",
+  "#9a6bff",
+  "#2bb8a3",
+  "#e05c78",
+  "#5aa9e6",
+  "#a8b545",
+  "#d9a03c",
+  "#c65bc9",
+];
+const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+function projectStyle(color: string | undefined): CSSProperties {
+  return { "--project-color": color } as CSSProperties;
+}
 
 export function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
@@ -33,7 +52,9 @@ export function App() {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Task[]>([]);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
-  const [projectOpen, setProjectOpen] = useState(false);
+  const [projectDialog, setProjectDialog] = useState<{
+    project?: Project;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
@@ -104,7 +125,7 @@ export function App() {
       }
       if (event.key === "Escape") {
         setNewTaskOpen(false);
-        setProjectOpen(false);
+        setProjectDialog(null);
         setQuery("");
         if (query) setView("active");
       }
@@ -151,20 +172,42 @@ export function App() {
       showError(reason);
     }
   }
-  async function createProject(name: string) {
+  async function saveProject(
+    input: { name: string; color: string | null },
+    existing?: Project,
+  ) {
     try {
-      const project = await api.createProject(name);
-      setData(
-        (current) =>
-          current && {
-            ...current,
-            projects: [...current.projects, project].sort((a, b) =>
-              a.name.localeCompare(b.name),
-            ),
-          },
-      );
-      setFilter(project.id);
-      setProjectOpen(false);
+      if (existing) {
+        const project = await api.updateProject(existing.id, {
+          name: input.name,
+          color: input.color ?? existing.color,
+        });
+        setData(
+          (current) =>
+            current && {
+              ...current,
+              projects: current.projects
+                .map((item) => (item.id === project.id ? project : item))
+                .sort((a, b) => a.name.localeCompare(b.name)),
+            },
+        );
+      } else {
+        const project = await api.createProject(
+          input.name,
+          input.color ?? undefined,
+        );
+        setData(
+          (current) =>
+            current && {
+              ...current,
+              projects: [...current.projects, project].sort((a, b) =>
+                a.name.localeCompare(b.name),
+              ),
+            },
+        );
+        setFilter(project.id);
+      }
+      setProjectDialog(null);
     } catch (reason) {
       showError(reason);
     }
@@ -315,28 +358,44 @@ export function App() {
             <button
               type="button"
               aria-label="Add project"
-              onClick={() => setProjectOpen(true)}
+              onClick={() => setProjectDialog({})}
             >
               <Plus size={15} />
             </button>
           </div>
           {data.projects.map((project) => (
-            <button
-              type="button"
+            <div
               key={project.id}
-              className={
-                view === "active" && filter === project.id
-                  ? "nav-item active"
-                  : "nav-item"
-              }
-              onClick={() => changeFilter(project.id)}
+              className="project-row"
+              style={projectStyle(project.color)}
             >
-              <span className="project-dot" />
-              {project.name}
-              <span>
-                {active.filter((task) => task.projectId === project.id).length}
-              </span>
-            </button>
+              <button
+                type="button"
+                className={
+                  view === "active" && filter === project.id
+                    ? "nav-item active"
+                    : "nav-item"
+                }
+                onClick={() => changeFilter(project.id)}
+              >
+                <span className="project-dot" />
+                {project.name}
+                <span>
+                  {
+                    active.filter((task) => task.projectId === project.id)
+                      .length
+                  }
+                </span>
+              </button>
+              <button
+                type="button"
+                className="edit-project"
+                aria-label={`Edit ${project.name}`}
+                onClick={() => setProjectDialog({ project })}
+              >
+                <Pencil size={13} />
+              </button>
+            </div>
           ))}
           <div className="sidebar-spacer" />
           <button
@@ -423,10 +482,11 @@ export function App() {
           onClose={() => setNewTaskOpen(false)}
         />
       )}
-      {projectOpen && (
+      {projectDialog && (
         <ProjectDialog
-          onCreate={createProject}
-          onClose={() => setProjectOpen(false)}
+          project={projectDialog.project}
+          onSave={(input) => saveProject(input, projectDialog.project)}
+          onClose={() => setProjectDialog(null)}
         />
       )}
     </main>
@@ -468,45 +528,50 @@ function TaskList({
   };
   return (
     <ol className="task-list">
-      {tasks.map((task, index) => (
-        <li
-          key={task.id}
-          className={selectedId === task.id ? "task-row selected" : "task-row"}
-          draggable={canReorder}
-          onDragStart={() => setDragged(task)}
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={(event) => drop(event, task)}
-        >
-          <button
-            type="button"
-            className="task-select"
-            onClick={() => onSelect(task)}
+      {tasks.map((task, index) => {
+        const project = projects.find(
+          (candidate) => candidate.id === task.projectId,
+        );
+        return (
+          <li
+            key={task.id}
+            className={
+              selectedId === task.id ? "task-row selected" : "task-row"
+            }
+            style={projectStyle(project?.color)}
+            draggable={canReorder}
+            onDragStart={() => setDragged(task)}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => drop(event, task)}
           >
-            <span className="task-order">{index + 1}</span>
-            {canReorder && <GripVertical className="grab" size={17} />}
-            <span className="task-copy">
-              <strong>{task.title}</strong>
-              <span>
-                {projects.find((project) => project.id === task.projectId)
-                  ?.name ?? "Unknown project"}
-              </span>
-            </span>
-          </button>
-          {canReorder && (
             <button
               type="button"
-              className="complete"
-              onClick={(event) => {
-                event.stopPropagation();
-                onComplete(task);
-              }}
-              aria-label={`Complete ${task.title}`}
+              className="task-select"
+              onClick={() => onSelect(task)}
             >
-              <Check size={16} />
+              <span className="task-order">{index + 1}</span>
+              {canReorder && <GripVertical className="grab" size={17} />}
+              <span className="task-copy">
+                <strong>{task.title}</strong>
+                <span>{project?.name ?? "Unknown project"}</span>
+              </span>
             </button>
-          )}
-        </li>
-      ))}
+            {canReorder && (
+              <button
+                type="button"
+                className="complete"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onComplete(task);
+                }}
+                aria-label={`Complete ${task.title}`}
+              >
+                <Check size={16} />
+              </button>
+            )}
+          </li>
+        );
+      })}
     </ol>
   );
 }
@@ -739,16 +804,25 @@ function NewTaskDialog({
   );
 }
 function ProjectDialog({
-  onCreate,
+  project,
+  onSave,
   onClose,
-}: { onCreate: (name: string) => void; onClose: () => void }) {
-  const [name, setName] = useState("");
+}: {
+  project?: Project;
+  onSave: (input: { name: string; color: string | null }) => void;
+  onClose: () => void;
+}) {
+  const [name, setName] = useState(project?.name ?? "");
+  // Empty string means "let the backend pick a free palette color".
+  const [color, setColor] = useState(project?.color ?? "");
+  const colorValid = color === "" ? !project : HEX_COLOR.test(color);
   return (
-    <Dialog title="New project" onClose={onClose}>
+    <Dialog title={project ? "Edit project" : "New project"} onClose={onClose}>
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (name.trim()) onCreate(name);
+          if (name.trim() && colorValid)
+            onSave({ name, color: color === "" ? null : color });
         }}
       >
         <label>
@@ -759,12 +833,39 @@ function ProjectDialog({
             placeholder="e.g. Engine"
           />
         </label>
+        <label>
+          Color {!project && <span className="optional">optional</span>}
+          <span className="color-field">
+            {PALETTE.map((swatch) => (
+              <button
+                type="button"
+                key={swatch}
+                className={
+                  color.toLowerCase() === swatch ? "swatch selected" : "swatch"
+                }
+                style={{ background: swatch }}
+                aria-label={`Use ${swatch}`}
+                onClick={() => setColor(swatch)}
+              />
+            ))}
+            <input
+              value={color}
+              onChange={(event) => setColor(event.target.value)}
+              placeholder="auto"
+              aria-label="Hex color"
+            />
+          </span>
+        </label>
         <div className="dialog-actions">
           <button type="button" className="secondary" onClick={onClose}>
             Cancel
           </button>
-          <button type="submit" className="primary" disabled={!name.trim()}>
-            Create project
+          <button
+            type="submit"
+            className="primary"
+            disabled={!name.trim() || !colorValid}
+          >
+            {project ? "Save project" : "Create project"}
           </button>
         </div>
       </form>

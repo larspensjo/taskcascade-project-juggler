@@ -41,7 +41,62 @@ impl AppState {
                 .execute(&pool)
                 .await?;
         }
+        assign_missing_colors(&pool).await?;
         Ok(Self(Arc::new(pool)))
+    }
+}
+
+/// Dark-theme-friendly defaults; projects keep working if the user replaces
+/// them with arbitrary hex values.
+const PALETTE: [&str; 8] = [
+    "#e8833a", "#9a6bff", "#2bb8a3", "#e05c78", "#5aa9e6", "#a8b545", "#d9a03c", "#c65bc9",
+];
+
+async fn assign_missing_colors(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let missing: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM projects WHERE color IS NULL ORDER BY created_at, id")
+            .fetch_all(pool)
+            .await?;
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let mut used: Vec<String> =
+        sqlx::query_scalar("SELECT color FROM projects WHERE color IS NOT NULL")
+            .fetch_all(pool)
+            .await?;
+    for id in missing {
+        let color = next_free_color(&used);
+        sqlx::query("UPDATE projects SET color = ? WHERE id = ?")
+            .bind(&color)
+            .bind(&id)
+            .execute(pool)
+            .await?;
+        used.push(color);
+    }
+    Ok(())
+}
+
+fn next_free_color(used: &[String]) -> String {
+    PALETTE
+        .iter()
+        .find(|color| !used.iter().any(|candidate| candidate.eq_ignore_ascii_case(color)))
+        .map_or_else(
+            || PALETTE[used.len() % PALETTE.len()].to_owned(),
+            |color| (*color).to_owned(),
+        )
+}
+
+fn parse_color(value: &str) -> Result<String, ApiError> {
+    let trimmed = value.trim();
+    let is_hex = trimmed.len() == 7
+        && trimmed.starts_with('#')
+        && trimmed[1..].chars().all(|c| c.is_ascii_hexdigit());
+    if is_hex {
+        Ok(trimmed.to_ascii_lowercase())
+    } else {
+        Err(ApiError::bad_request(
+            "Color must be a hex value like #4488cc.",
+        ))
     }
 }
 
@@ -51,6 +106,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/bootstrap", get(bootstrap))
         .route("/api/search", get(search))
         .route("/api/projects", post(create_project))
+        .route("/api/projects/{id}", put(update_project))
         .route("/api/tasks", post(create_task))
         .route("/api/tasks/{id}", put(update_task))
         .route("/api/tasks/{id}/complete", post(complete_task))
@@ -78,6 +134,7 @@ async fn health() -> Json<Health> {
 struct Project {
     id: String,
     name: String,
+    color: String,
     created_at: String,
 }
 
@@ -111,10 +168,11 @@ struct Preference {
 }
 
 async fn bootstrap(State(state): State<AppState>) -> Result<Json<Bootstrap>, ApiError> {
-    let projects =
-        sqlx::query_as::<_, Project>("SELECT id, name, created_at FROM projects ORDER BY name")
-            .fetch_all(state.0.as_ref())
-            .await?;
+    let projects = sqlx::query_as::<_, Project>(
+        "SELECT id, name, color, created_at FROM projects ORDER BY name",
+    )
+    .fetch_all(state.0.as_ref())
+    .await?;
     let active_tasks = fetch_tasks(&state.0, false).await?;
     let archived_tasks = fetch_tasks(&state.0, true).await?;
     let preferences = sqlx::query_as::<_, Preference>("SELECT key, value FROM preferences")
@@ -144,6 +202,7 @@ async fn fetch_tasks(pool: &SqlitePool, archived: bool) -> Result<Vec<Task>, sql
 #[serde(rename_all = "camelCase")]
 struct CreateProject {
     name: String,
+    color: Option<String>,
 }
 
 async fn create_project(
@@ -151,17 +210,64 @@ async fn create_project(
     Json(input): Json<CreateProject>,
 ) -> Result<Json<Project>, ApiError> {
     let name = required(&input.name, "Project name")?;
+    let color = match &input.color {
+        Some(value) => parse_color(value)?,
+        None => {
+            let used: Vec<String> =
+                sqlx::query_scalar("SELECT color FROM projects WHERE color IS NOT NULL")
+                    .fetch_all(state.0.as_ref())
+                    .await?;
+            next_free_color(&used)
+        }
+    };
     let project = Project {
         id: Uuid::new_v4().to_string(),
         name,
+        color,
         created_at: now(),
     };
-    sqlx::query("INSERT INTO projects (id, name, created_at) VALUES (?, ?, ?)")
+    sqlx::query("INSERT INTO projects (id, name, color, created_at) VALUES (?, ?, ?, ?)")
         .bind(&project.id)
         .bind(&project.name)
+        .bind(&project.color)
         .bind(&project.created_at)
         .execute(state.0.as_ref())
         .await?;
+    Ok(Json(project))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProject {
+    name: String,
+    color: String,
+}
+
+async fn update_project(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(input): Json<UpdateProject>,
+) -> Result<Json<Project>, ApiError> {
+    let name = required(&input.name, "Project name")?;
+    let color = parse_color(&input.color)?;
+    let result = sqlx::query("UPDATE projects SET name = ?, color = ? WHERE id = ?")
+        .bind(&name)
+        .bind(&color)
+        .bind(&id)
+        .execute(state.0.as_ref())
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(ApiError {
+            status: StatusCode::NOT_FOUND,
+            message: "The project was not found.".into(),
+        });
+    }
+    let project = sqlx::query_as::<_, Project>(
+        "SELECT id, name, color, created_at FROM projects WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(state.0.as_ref())
+    .await?;
     Ok(Json(project))
 }
 
