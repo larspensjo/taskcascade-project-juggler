@@ -25,7 +25,6 @@ import { type Bootstrap, type Project, type Task, api } from "./api";
 
 type View = "active" | "archive" | "search";
 type EditorTab = "description" | "scratchpad";
-const ALL_PROJECTS = "all";
 // Mirrors the backend's default palette so the dialog swatches match
 // what auto-assignment produces.
 const PALETTE = [
@@ -44,10 +43,35 @@ function projectStyle(color: string | undefined): CSSProperties {
   return { "--project-color": color } as CSSProperties;
 }
 
+// The saved "projectFilter" preference holds a JSON array of project ids.
+// Older versions stored "all" or a single project id; treat anything
+// unrecognized as "every project".
+function parseProjectFilter(
+  saved: string | undefined,
+  projects: Project[],
+): string[] {
+  const allIds = projects.map((project) => project.id);
+  if (saved?.startsWith("[")) {
+    try {
+      const parsed: unknown = JSON.parse(saved);
+      if (Array.isArray(parsed))
+        return allIds.filter((id) => parsed.includes(id));
+    } catch {}
+    return allIds;
+  }
+  return saved && allIds.includes(saved) ? [saved] : allIds;
+}
+
+function toggleId(selection: string[], id: string): string[] {
+  return selection.includes(id)
+    ? selection.filter((item) => item !== id)
+    : [...selection, id];
+}
+
 export function App() {
   const [data, setData] = useState<Bootstrap | null>(null);
   const [view, setView] = useState<View>("active");
-  const [filter, setFilter] = useState(ALL_PROJECTS);
+  const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Task[]>([]);
@@ -67,12 +91,7 @@ export function App() {
         const savedFilter = boot.preferences.find(
           (preference) => preference.key === "projectFilter",
         )?.value;
-        if (
-          savedFilter &&
-          (savedFilter === ALL_PROJECTS ||
-            boot.projects.some((project) => project.id === savedFilter))
-        )
-          setFilter(savedFilter);
+        setSelectedProjects(parseProjectFilter(savedFilter, boot.projects));
         setSelectedId(boot.activeTasks[0]?.id ?? null);
       })
       .catch(showError);
@@ -99,10 +118,8 @@ export function App() {
   const visibleTasks = useMemo(() => {
     const source =
       view === "archive" ? archived : view === "search" ? results : active;
-    return filter === ALL_PROJECTS
-      ? source
-      : source.filter((task) => task.projectId === filter);
-  }, [active, archived, filter, results, view]);
+    return source.filter((task) => selectedProjects.includes(task.projectId));
+  }, [active, archived, results, selectedProjects, view]);
   const selected =
     [...active, ...archived].find((task) => task.id === selectedId) ??
     visibleTasks[0] ??
@@ -163,11 +180,10 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [query, selected, view, visibleTasks]);
 
-  async function changeFilter(next: string) {
-    setFilter(next);
-    setView("active");
+  async function changeSelection(next: string[]) {
+    setSelectedProjects(next);
     try {
-      await api.savePreference("projectFilter", next);
+      await api.savePreference("projectFilter", JSON.stringify(next));
     } catch (reason) {
       showError(reason);
     }
@@ -205,7 +221,7 @@ export function App() {
               ),
             },
         );
-        setFilter(project.id);
+        changeSelection([project.id]);
       }
       setProjectDialog(null);
     } catch (reason) {
@@ -340,14 +356,10 @@ export function App() {
           <div className="sidebar-heading">WORKSPACE</div>
           <button
             type="button"
-            className={
-              view === "active" && filter === ALL_PROJECTS
-                ? "nav-item active"
-                : "nav-item"
-            }
+            className="nav-item"
             onClick={() => {
               setView("active");
-              changeFilter(ALL_PROJECTS);
+              changeSelection(data.projects.map((project) => project.id));
             }}
           >
             <FileText size={16} />
@@ -372,11 +384,18 @@ export function App() {
               <button
                 type="button"
                 className={
-                  view === "active" && filter === project.id
+                  view === "active" && selectedProjects.includes(project.id)
                     ? "nav-item active"
                     : "nav-item"
                 }
-                onClick={() => changeFilter(project.id)}
+                onClick={(event) => {
+                  setView("active");
+                  changeSelection(
+                    event.ctrlKey || event.metaKey
+                      ? toggleId(selectedProjects, project.id)
+                      : [project.id],
+                  );
+                }}
               >
                 <span className="project-dot" />
                 {project.name}
@@ -418,10 +437,15 @@ export function App() {
                   ? "Completed work"
                   : view === "search"
                     ? "Search results"
-                    : filter === ALL_PROJECTS
+                    : selectedProjects.length === data.projects.length
                       ? "Your ordered stack"
-                      : data.projects.find((project) => project.id === filter)
-                          ?.name}
+                      : selectedProjects.length === 0
+                        ? "No projects selected"
+                        : selectedProjects.length === 1
+                          ? data.projects.find(
+                              (project) => project.id === selectedProjects[0],
+                            )?.name
+                          : `${selectedProjects.length} projects`}
               </span>
               <h1>
                 {view === "archive"
@@ -476,7 +500,9 @@ export function App() {
         <NewTaskDialog
           projects={data.projects}
           initialProject={
-            filter === ALL_PROJECTS ? data.projects[0]?.id : filter
+            data.projects.find((project) =>
+              selectedProjects.includes(project.id),
+            )?.id ?? data.projects[0]?.id
           }
           onCreate={createTask}
           onClose={() => setNewTaskOpen(false)}
