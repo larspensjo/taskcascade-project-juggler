@@ -42,3 +42,17 @@ Consequences: The data model retains all task fields and timestamps. Restore and
 Decision: An archived task can be restored to the top of the active stack. This supersedes the no-restore portion of the 2026-07-10 "Completion creates a read-only archive" decision; the rest of that decision stands.
 Context: Completed tasks sometimes need to come back — a piece of work turns out to be unfinished, or is repeated. Viewing the archive already existed; only the restore action was missing.
 Consequences: Restore is a lifecycle action, not field editing — archived task content stays read-only. Restoring clears `completed_at` (an active task has no completion timestamp), so no completion history is retained across a restore; tasks that remain in the archive keep all their timestamps. Retaining completion history is still future work ("Task history").
+
+## 2026-07-13 — Drag-and-drop replaces archive/restore buttons; soft-delete trash
+
+Archiving, restoring, deleting, and undeleting are drag gestures onto sidebar
+drop targets (Archive, Deleted, All tasks); the per-row ✓ button and the
+editor's Complete/Restore buttons are removed (the Delete key remains the
+keyboard path for completing). Tasks gain a third state via `deleted_at`;
+deleting clears `completed_at` so the undelete drop target chooses the
+destination ("All tasks" → stack top, "Archive" → fresh completion
+timestamp). Deleted tasks are excluded from search and all mutations except
+undelete. No purge mechanism — the trash only grows until a future decision.
+This softens the earlier "archive is immutable" stance: archived tasks can
+now be moved to the trash. Spec:
+`docs/superpowers/specs/2026-07-13-drag-drop-archive-trash-design.md`.

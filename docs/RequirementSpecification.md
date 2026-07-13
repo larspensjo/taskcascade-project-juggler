@@ -103,9 +103,9 @@ Changes are saved automatically.
 
 ## Delete / Complete Task
 
-Completing a task removes it from the active list.
+Complete a task by dragging it from the stack onto the **Archive** sidebar item, or by pressing Delete while it is selected in the active view. Completing removes it from the active list and moves it to the archive.
 
-Completed tasks are moved to an archive.
+Delete an active or archived task by dragging it onto the **Deleted** sidebar item. Deleted tasks retain all fields and timestamps, but are excluded from search, reordering, and every mutation except undelete. There is no permanent deletion.
 
 The archive preserves:
 
@@ -186,7 +186,11 @@ Completed tasks are searchable.
 
 Archived task fields are read-only.
 
-An archived task can be restored to the top of the active stack. Restoring clears its completed timestamp as it re-enters the active list.
+Drag an archived task onto **All tasks** to restore it to the top of the active stack. Restoring clears its completed timestamp as it re-enters the active list.
+
+### Trash
+
+Drag a deleted task onto **All tasks** to make it active at the top of the stack, or onto **Archive** to file it as completed with a fresh completed timestamp. Deleting clears the original completed timestamp, so it is not preserved when undeleting to the archive.
 
 ---
 
@@ -220,6 +224,7 @@ Application startup restores:
 
 - Active task list
 - Archive
+- Deleted
 - Window state
 - Last selected project filter
 
