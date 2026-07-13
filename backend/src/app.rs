@@ -79,7 +79,11 @@ async fn assign_missing_colors(pool: &SqlitePool) -> Result<(), sqlx::Error> {
 fn next_free_color(used: &[String]) -> String {
     PALETTE
         .iter()
-        .find(|color| !used.iter().any(|candidate| candidate.eq_ignore_ascii_case(color)))
+        .find(|color| {
+            !used
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(color))
+        })
         .map_or_else(
             || PALETTE[used.len() % PALETTE.len()].to_owned(),
             |color| (*color).to_owned(),
@@ -110,7 +114,9 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tasks", post(create_task))
         .route("/api/tasks/{id}", put(update_task))
         .route("/api/tasks/{id}/complete", post(complete_task))
+        .route("/api/tasks/{id}/delete", post(delete_task))
         .route("/api/tasks/{id}/restore", post(restore_task))
+        .route("/api/tasks/{id}/undelete", post(undelete_task))
         .route("/api/tasks/{id}/reorder", post(reorder_task))
         .route("/api/preferences/{key}", put(save_preference))
         .fallback_service(ServeDir::new("../frontend/dist"))
@@ -150,6 +156,7 @@ struct Task {
     created_at: String,
     modified_at: String,
     completed_at: Option<String>,
+    deleted_at: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -158,6 +165,7 @@ struct Bootstrap {
     projects: Vec<Project>,
     active_tasks: Vec<Task>,
     archived_tasks: Vec<Task>,
+    deleted_tasks: Vec<Task>,
     preferences: Vec<Preference>,
 }
 
@@ -173,8 +181,9 @@ async fn bootstrap(State(state): State<AppState>) -> Result<Json<Bootstrap>, Api
     )
     .fetch_all(state.0.as_ref())
     .await?;
-    let active_tasks = fetch_tasks(&state.0, false).await?;
-    let archived_tasks = fetch_tasks(&state.0, true).await?;
+    let active_tasks = fetch_tasks(&state.0, TaskFilter::Active).await?;
+    let archived_tasks = fetch_tasks(&state.0, TaskFilter::Archived).await?;
+    let deleted_tasks = fetch_tasks(&state.0, TaskFilter::Deleted).await?;
     let preferences = sqlx::query_as::<_, Preference>("SELECT key, value FROM preferences")
         .fetch_all(state.0.as_ref())
         .await?;
@@ -182,19 +191,31 @@ async fn bootstrap(State(state): State<AppState>) -> Result<Json<Bootstrap>, Api
         projects,
         active_tasks,
         archived_tasks,
+        deleted_tasks,
         preferences,
     }))
 }
 
-async fn fetch_tasks(pool: &SqlitePool, archived: bool) -> Result<Vec<Task>, sqlx::Error> {
-    let predicate = if archived {
-        "completed_at IS NOT NULL"
-    } else {
-        "completed_at IS NULL"
+enum TaskFilter {
+    Active,
+    Archived,
+    Deleted,
+}
+
+async fn fetch_tasks(pool: &SqlitePool, filter: TaskFilter) -> Result<Vec<Task>, sqlx::Error> {
+    let (predicate, order) = match filter {
+        TaskFilter::Active => (
+            "completed_at IS NULL AND deleted_at IS NULL",
+            "position ASC",
+        ),
+        TaskFilter::Archived => (
+            "completed_at IS NOT NULL AND deleted_at IS NULL",
+            "completed_at DESC",
+        ),
+        TaskFilter::Deleted => ("deleted_at IS NOT NULL", "deleted_at DESC"),
     };
     sqlx::query_as::<_, Task>(&format!(
-        "SELECT id, title, description, scratchpad, project_id, position, created_at, modified_at, completed_at FROM tasks WHERE {predicate} ORDER BY {}",
-        if archived { "completed_at DESC" } else { "position ASC" }
+        "SELECT id, title, description, scratchpad, project_id, position, created_at, modified_at, completed_at, deleted_at FROM tasks WHERE {predicate} ORDER BY {order}"
     )).fetch_all(pool).await
 }
 
@@ -302,9 +323,12 @@ async fn create_task(
         created_at: timestamp.clone(),
         modified_at: timestamp,
         completed_at: None,
+        deleted_at: None,
     };
     let mut tx = state.0.begin().await?;
-    sqlx::query("UPDATE tasks SET position = position + 1 WHERE completed_at IS NULL")
+    sqlx::query(
+        "UPDATE tasks SET position = position + 1 WHERE completed_at IS NULL AND deleted_at IS NULL",
+    )
         .execute(&mut *tx)
         .await?;
     sqlx::query("INSERT INTO tasks (id, title, description, scratchpad, project_id, position, created_at, modified_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)")
@@ -336,12 +360,12 @@ async fn update_task(
         return Err(ApiError::bad_request("Choose a valid project."));
     }
     let modified_at = now();
-    let result = sqlx::query("UPDATE tasks SET title = ?, project_id = ?, description = ?, scratchpad = ?, modified_at = ? WHERE id = ? AND completed_at IS NULL")
+    let result = sqlx::query("UPDATE tasks SET title = ?, project_id = ?, description = ?, scratchpad = ?, modified_at = ? WHERE id = ? AND completed_at IS NULL AND deleted_at IS NULL")
         .bind(&title).bind(&input.project_id).bind(&input.description).bind(&input.scratchpad).bind(&modified_at).bind(&id).execute(state.0.as_ref()).await?;
     if result.rows_affected() == 0 {
         return Err(ApiError::not_found());
     }
-    let task = sqlx::query_as::<_, Task>("SELECT id, title, description, scratchpad, project_id, position, created_at, modified_at, completed_at FROM tasks WHERE id = ?")
+    let task = sqlx::query_as::<_, Task>("SELECT id, title, description, scratchpad, project_id, position, created_at, modified_at, completed_at, deleted_at FROM tasks WHERE id = ?")
         .bind(id).fetch_one(state.0.as_ref()).await?;
     Ok(Json(task))
 }
@@ -352,7 +376,7 @@ async fn complete_task(
 ) -> Result<Json<Task>, ApiError> {
     let completed_at = now();
     let result = sqlx::query(
-        "UPDATE tasks SET completed_at = ?, modified_at = ? WHERE id = ? AND completed_at IS NULL",
+        "UPDATE tasks SET completed_at = ?, modified_at = ? WHERE id = ? AND completed_at IS NULL AND deleted_at IS NULL",
     )
     .bind(&completed_at)
     .bind(&completed_at)
@@ -362,7 +386,28 @@ async fn complete_task(
     if result.rows_affected() == 0 {
         return Err(ApiError::not_found());
     }
-    let task = sqlx::query_as::<_, Task>("SELECT id, title, description, scratchpad, project_id, position, created_at, modified_at, completed_at FROM tasks WHERE id = ?")
+    let task = sqlx::query_as::<_, Task>("SELECT id, title, description, scratchpad, project_id, position, created_at, modified_at, completed_at, deleted_at FROM tasks WHERE id = ?")
+        .bind(id).fetch_one(state.0.as_ref()).await?;
+    Ok(Json(task))
+}
+
+async fn delete_task(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<Task>, ApiError> {
+    let deleted_at = now();
+    let result = sqlx::query(
+        "UPDATE tasks SET deleted_at = ?, completed_at = NULL, modified_at = ? WHERE id = ? AND deleted_at IS NULL",
+    )
+    .bind(&deleted_at)
+    .bind(&deleted_at)
+    .bind(&id)
+    .execute(state.0.as_ref())
+    .await?;
+    if result.rows_affected() == 0 {
+        return Err(ApiError::not_found());
+    }
+    let task = sqlx::query_as::<_, Task>("SELECT id, title, description, scratchpad, project_id, position, created_at, modified_at, completed_at, deleted_at FROM tasks WHERE id = ?")
         .bind(id).fetch_one(state.0.as_ref()).await?;
     Ok(Json(task))
 }
@@ -372,11 +417,13 @@ async fn restore_task(
     State(state): State<AppState>,
 ) -> Result<Json<Task>, ApiError> {
     let mut tx = state.0.begin().await?;
-    sqlx::query("UPDATE tasks SET position = position + 1 WHERE completed_at IS NULL")
+    sqlx::query(
+        "UPDATE tasks SET position = position + 1 WHERE completed_at IS NULL AND deleted_at IS NULL",
+    )
         .execute(&mut *tx)
         .await?;
     let result = sqlx::query(
-        "UPDATE tasks SET completed_at = NULL, position = 0, modified_at = ? WHERE id = ? AND completed_at IS NOT NULL",
+        "UPDATE tasks SET completed_at = NULL, position = 0, modified_at = ? WHERE id = ? AND completed_at IS NOT NULL AND deleted_at IS NULL",
     )
     .bind(now())
     .bind(&id)
@@ -386,7 +433,62 @@ async fn restore_task(
         return Err(ApiError::not_found());
     }
     tx.commit().await?;
-    let task = sqlx::query_as::<_, Task>("SELECT id, title, description, scratchpad, project_id, position, created_at, modified_at, completed_at FROM tasks WHERE id = ?")
+    let task = sqlx::query_as::<_, Task>("SELECT id, title, description, scratchpad, project_id, position, created_at, modified_at, completed_at, deleted_at FROM tasks WHERE id = ?")
+        .bind(id).fetch_one(state.0.as_ref()).await?;
+    Ok(Json(task))
+}
+
+#[derive(Deserialize)]
+struct UndeleteTask {
+    to: String,
+}
+
+async fn undelete_task(
+    Path(id): Path<String>,
+    State(state): State<AppState>,
+    Json(input): Json<UndeleteTask>,
+) -> Result<Json<Task>, ApiError> {
+    match input.to.as_str() {
+        "stack" => {
+            let mut tx = state.0.begin().await?;
+            sqlx::query(
+                "UPDATE tasks SET position = position + 1 WHERE completed_at IS NULL AND deleted_at IS NULL",
+            )
+            .execute(&mut *tx)
+            .await?;
+            let result = sqlx::query(
+                "UPDATE tasks SET deleted_at = NULL, position = 0, modified_at = ? WHERE id = ? AND deleted_at IS NOT NULL",
+            )
+            .bind(now())
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+            if result.rows_affected() == 0 {
+                return Err(ApiError::not_found());
+            }
+            tx.commit().await?;
+        }
+        "archive" => {
+            let timestamp = now();
+            let result = sqlx::query(
+                "UPDATE tasks SET deleted_at = NULL, completed_at = ?, modified_at = ? WHERE id = ? AND deleted_at IS NOT NULL",
+            )
+            .bind(&timestamp)
+            .bind(&timestamp)
+            .bind(&id)
+            .execute(state.0.as_ref())
+            .await?;
+            if result.rows_affected() == 0 {
+                return Err(ApiError::not_found());
+            }
+        }
+        _ => {
+            return Err(ApiError::bad_request(
+                "Destination must be \"stack\" or \"archive\".",
+            ));
+        }
+    }
+    let task = sqlx::query_as::<_, Task>("SELECT id, title, description, scratchpad, project_id, position, created_at, modified_at, completed_at, deleted_at FROM tasks WHERE id = ?")
         .bind(id).fetch_one(state.0.as_ref()).await?;
     Ok(Json(task))
 }
@@ -404,7 +506,7 @@ async fn reorder_task(
     Json(input): Json<ReorderTask>,
 ) -> Result<Json<Vec<String>>, ApiError> {
     let ids = sqlx::query_scalar::<_, String>(
-        "SELECT id FROM tasks WHERE completed_at IS NULL ORDER BY position",
+        "SELECT id FROM tasks WHERE completed_at IS NULL AND deleted_at IS NULL ORDER BY position",
     )
     .fetch_all(state.0.as_ref())
     .await?;
@@ -432,7 +534,7 @@ async fn search(
     Query(query): Query<SearchQuery>,
 ) -> Result<Json<Vec<Task>>, ApiError> {
     let pattern = format!("%{}%", query.q.trim());
-    let tasks = sqlx::query_as::<_, Task>("SELECT id, title, description, scratchpad, project_id, position, created_at, modified_at, completed_at FROM tasks WHERE title LIKE ? OR description LIKE ? OR scratchpad LIKE ? ORDER BY completed_at IS NOT NULL, position, completed_at DESC")
+    let tasks = sqlx::query_as::<_, Task>("SELECT id, title, description, scratchpad, project_id, position, created_at, modified_at, completed_at, deleted_at FROM tasks WHERE deleted_at IS NULL AND (title LIKE ? OR description LIKE ? OR scratchpad LIKE ?) ORDER BY completed_at IS NOT NULL, position, completed_at DESC")
         .bind(&pattern).bind(&pattern).bind(&pattern).fetch_all(state.0.as_ref()).await?;
     Ok(Json(tasks))
 }

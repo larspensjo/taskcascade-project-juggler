@@ -54,7 +54,9 @@ fn assert_stack_b_on_top(boot: &Value, a_id: &str, b_id: &str) {
     assert_eq!(active[0]["position"], 0);
     assert_eq!(active[1]["id"], *a_id);
     assert_eq!(active[1]["position"], 1);
-    let archived = boot["archivedTasks"].as_array().expect("archivedTasks array");
+    let archived = boot["archivedTasks"]
+        .as_array()
+        .expect("archivedTasks array");
     assert!(archived.is_empty(), "archive should be empty");
 }
 
@@ -100,8 +102,7 @@ async fn restore_returns_archived_task_to_top_of_stack() {
     assert!(completed["completedAt"].is_string());
 
     // Restore B: back on top, completedAt cleared, A bumped to position 1.
-    let (status, restored) =
-        send(&app, "POST", &format!("/api/tasks/{b_id}/restore"), None).await;
+    let (status, restored) = send(&app, "POST", &format!("/api/tasks/{b_id}/restore"), None).await;
     assert_eq!(status, StatusCode::OK, "restore should succeed: {restored}");
     assert_eq!(restored["id"], *b_id);
     assert_eq!(restored["position"], 0);
