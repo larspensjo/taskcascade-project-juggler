@@ -1,12 +1,12 @@
 import {
   Archive,
-  ArchiveRestore,
   Check,
   FileText,
   GripVertical,
   Pencil,
   Plus,
   Search,
+  Trash2,
   X,
 } from "lucide-react";
 import {
@@ -23,7 +23,9 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { type Bootstrap, type Project, type Task, api } from "./api";
 
-type View = "active" | "archive" | "search";
+type View = "active" | "archive" | "search" | "deleted";
+type TaskStatus = "active" | "archived" | "deleted";
+type DropTarget = "stack" | "archive" | "trash";
 type EditorTab = "description" | "scratchpad";
 // Mirrors the backend's default palette so the dialog swatches match
 // what auto-assignment produces.
@@ -38,6 +40,10 @@ const PALETTE = [
   "#c65bc9",
 ];
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
+
+function statusOf(task: Task): TaskStatus {
+  return task.deletedAt ? "deleted" : task.completedAt ? "archived" : "active";
+}
 
 function projectStyle(color: string | undefined): CSSProperties {
   return { "--project-color": color } as CSSProperties;
@@ -80,6 +86,8 @@ export function App() {
     project?: Project;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [dragged, setDragged] = useState<Task | null>(null);
+  const [dropHover, setDropHover] = useState<DropTarget | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
 
@@ -115,13 +123,22 @@ export function App() {
     );
   const active = data?.activeTasks ?? [];
   const archived = data?.archivedTasks ?? [];
+  const deleted = data?.deletedTasks ?? [];
   const visibleTasks = useMemo(() => {
     const source =
-      view === "archive" ? archived : view === "search" ? results : active;
+      view === "archive"
+        ? archived
+        : view === "deleted"
+          ? deleted
+          : view === "search"
+            ? results
+            : active;
     return source.filter((task) => selectedProjects.includes(task.projectId));
-  }, [active, archived, results, selectedProjects, view]);
+  }, [active, archived, deleted, results, selectedProjects, view]);
   const selected =
-    [...active, ...archived].find((task) => task.id === selectedId) ??
+    [...active, ...archived, ...deleted].find(
+      (task) => task.id === selectedId,
+    ) ??
     visibleTasks[0] ??
     null;
 
@@ -150,7 +167,8 @@ export function App() {
         event.key === "Enter" &&
         !isEditingTarget(event.target) &&
         selected &&
-        view !== "archive"
+        view !== "archive" &&
+        view !== "deleted"
       ) {
         event.preventDefault();
         titleRef.current?.focus();
@@ -302,6 +320,86 @@ export function App() {
       showError(reason);
     }
   }
+  async function moveToTrash(task: Task) {
+    try {
+      const trashed = await api.deleteTask(task.id);
+      setData(
+        (current) =>
+          current && {
+            ...current,
+            activeTasks: current.activeTasks.filter(
+              (item) => item.id !== task.id,
+            ),
+            archivedTasks: current.archivedTasks.filter(
+              (item) => item.id !== task.id,
+            ),
+            deletedTasks: [trashed, ...current.deletedTasks],
+          },
+      );
+      setSelectedId(null);
+    } catch (reason) {
+      showError(reason);
+    }
+  }
+  async function undelete(task: Task, to: "stack" | "archive") {
+    try {
+      const undeleted = await api.undeleteTask(task.id, to);
+      setData(
+        (current) =>
+          current && {
+            ...current,
+            deletedTasks: current.deletedTasks.filter(
+              (item) => item.id !== task.id,
+            ),
+            activeTasks:
+              to === "stack"
+                ? [undeleted, ...current.activeTasks]
+                : current.activeTasks,
+            archivedTasks:
+              to === "archive"
+                ? [undeleted, ...current.archivedTasks]
+                : current.archivedTasks,
+          },
+      );
+    } catch (reason) {
+      showError(reason);
+    }
+  }
+  function dropAction(target: DropTarget, task: Task): (() => void) | null {
+    const status = statusOf(task);
+    if (target === "archive" && status === "active")
+      return () => complete(task);
+    if (target === "archive" && status === "deleted")
+      return () => undelete(task, "archive");
+    if (target === "trash" && status !== "deleted")
+      return () => moveToTrash(task);
+    if (target === "stack" && status === "archived") return () => restore(task);
+    if (target === "stack" && status === "deleted")
+      return () => undelete(task, "stack");
+    return null;
+  }
+  function dropTargetProps(target: DropTarget) {
+    return {
+      onDragOver: (event: DragEvent<HTMLButtonElement>) => {
+        if (dragged && dropAction(target, dragged)) {
+          event.preventDefault();
+          setDropHover(target);
+        }
+      },
+      onDragLeave: () =>
+        setDropHover((current) => (current === target ? null : current)),
+      onDrop: (event: DragEvent<HTMLButtonElement>) => {
+        event.preventDefault();
+        if (dragged) dropAction(target, dragged)?.();
+        setDragged(null);
+        setDropHover(null);
+      },
+    };
+  }
+  const endDrag = () => {
+    setDragged(null);
+    setDropHover(null);
+  };
   async function reorder(task: Task, target: Task, after: boolean) {
     try {
       const order = await api.reorderTask(task.id, target.id, after);
@@ -356,11 +454,14 @@ export function App() {
           <div className="sidebar-heading">WORKSPACE</div>
           <button
             type="button"
-            className="nav-item"
+            className={
+              dropHover === "stack" ? "nav-item drop-ready" : "nav-item"
+            }
             onClick={() => {
               setView("active");
               changeSelection(data.projects.map((project) => project.id));
             }}
+            {...dropTargetProps("stack")}
           >
             <FileText size={16} />
             All tasks <span>{active.length}</span>
@@ -419,14 +520,31 @@ export function App() {
           <div className="sidebar-spacer" />
           <button
             type="button"
-            className={view === "archive" ? "nav-item active" : "nav-item"}
+            className={`nav-item${view === "archive" ? " active" : ""}${
+              dropHover === "archive" ? " drop-ready" : ""
+            }`}
             onClick={() => {
               setView("archive");
               setQuery("");
             }}
+            {...dropTargetProps("archive")}
           >
             <Archive size={16} />
             Archive <span>{archived.length}</span>
+          </button>
+          <button
+            type="button"
+            className={`nav-item${view === "deleted" ? " active" : ""}${
+              dropHover === "trash" ? " drop-ready" : ""
+            }`}
+            onClick={() => {
+              setView("deleted");
+              setQuery("");
+            }}
+            {...dropTargetProps("trash")}
+          >
+            <Trash2 size={16} />
+            Deleted <span>{deleted.length}</span>
           </button>
         </aside>
         <section className="task-pane">
@@ -435,24 +553,28 @@ export function App() {
               <span className="eyebrow">
                 {view === "archive"
                   ? "Completed work"
-                  : view === "search"
-                    ? "Search results"
-                    : selectedProjects.length === data.projects.length
-                      ? "Your ordered stack"
-                      : selectedProjects.length === 0
-                        ? "No projects selected"
-                        : selectedProjects.length === 1
-                          ? data.projects.find(
-                              (project) => project.id === selectedProjects[0],
-                            )?.name
-                          : `${selectedProjects.length} projects`}
+                  : view === "deleted"
+                    ? "Removed work"
+                    : view === "search"
+                      ? "Search results"
+                      : selectedProjects.length === data.projects.length
+                        ? "Your ordered stack"
+                        : selectedProjects.length === 0
+                          ? "No projects selected"
+                          : selectedProjects.length === 1
+                            ? data.projects.find(
+                                (project) => project.id === selectedProjects[0],
+                              )?.name
+                            : `${selectedProjects.length} projects`}
               </span>
               <h1>
                 {view === "archive"
                   ? "Archive"
-                  : view === "search"
-                    ? `Results for “${query}”`
-                    : "What’s next"}
+                  : view === "deleted"
+                    ? "Deleted"
+                    : view === "search"
+                      ? `Results for “${query}”`
+                      : "What’s next"}
               </h1>
             </div>
             <span className="count">{visibleTasks.length}</span>
@@ -461,10 +583,13 @@ export function App() {
             tasks={visibleTasks}
             selectedId={selected?.id ?? null}
             projects={data.projects}
+            draggable={view !== "search"}
             canReorder={view === "active"}
+            dragged={dragged}
             onSelect={(task) => setSelectedId(task.id)}
-            onComplete={complete}
             onReorder={reorder}
+            onDragStart={setDragged}
+            onDragEnd={endDrag}
           />
         </section>
         <section className="detail-pane">
@@ -473,10 +598,8 @@ export function App() {
               key={selected.id}
               task={selected}
               projects={data.projects}
-              archived={selected.completedAt !== null}
+              status={statusOf(selected)}
               onUpdate={updateTask}
-              onComplete={complete}
-              onRestore={restore}
               titleRef={titleRef}
             />
           ) : (
@@ -523,20 +646,25 @@ function TaskList({
   tasks,
   selectedId,
   projects,
+  draggable,
   canReorder,
+  dragged,
   onSelect,
-  onComplete,
   onReorder,
+  onDragStart,
+  onDragEnd,
 }: {
   tasks: Task[];
   selectedId: string | null;
   projects: Project[];
+  draggable: boolean;
   canReorder: boolean;
+  dragged: Task | null;
   onSelect: (task: Task) => void;
-  onComplete: (task: Task) => void;
   onReorder: (task: Task, target: Task, after: boolean) => void;
+  onDragStart: (task: Task) => void;
+  onDragEnd: () => void;
 }) {
-  const [dragged, setDragged] = useState<Task | null>(null);
   if (!tasks.length)
     return (
       <div className="empty-list">
@@ -550,7 +678,7 @@ function TaskList({
     const bounds = event.currentTarget.getBoundingClientRect();
     const after = event.clientY > bounds.top + bounds.height / 2;
     if (dragged && dragged.id !== target.id) onReorder(dragged, target, after);
-    setDragged(null);
+    onDragEnd();
   };
   return (
     <ol className="task-list">
@@ -565,10 +693,15 @@ function TaskList({
               selectedId === task.id ? "task-row selected" : "task-row"
             }
             style={projectStyle(project?.color)}
-            draggable={canReorder}
-            onDragStart={() => setDragged(task)}
-            onDragOver={(event) => event.preventDefault()}
-            onDrop={(event) => drop(event, task)}
+            draggable={draggable}
+            onDragStart={() => onDragStart(task)}
+            onDragEnd={onDragEnd}
+            onDragOver={(event) => {
+              if (canReorder) event.preventDefault();
+            }}
+            onDrop={(event) => {
+              if (canReorder) drop(event, task);
+            }}
           >
             <button
               type="button"
@@ -576,25 +709,12 @@ function TaskList({
               onClick={() => onSelect(task)}
             >
               <span className="task-order">{index + 1}</span>
-              {canReorder && <GripVertical className="grab" size={17} />}
+              {draggable && <GripVertical className="grab" size={17} />}
               <span className="task-copy">
                 <strong>{task.title}</strong>
                 <span>{project?.name ?? "Unknown project"}</span>
               </span>
             </button>
-            {canReorder && (
-              <button
-                type="button"
-                className="complete"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onComplete(task);
-                }}
-                aria-label={`Complete ${task.title}`}
-              >
-                <Check size={16} />
-              </button>
-            )}
           </li>
         );
       })}
@@ -605,18 +725,14 @@ function TaskList({
 function TaskEditor({
   task,
   projects,
-  archived,
+  status,
   onUpdate,
-  onComplete,
-  onRestore,
   titleRef,
 }: {
   task: Task;
   projects: Project[];
-  archived: boolean;
+  status: TaskStatus;
   onUpdate: (task: Task) => void;
-  onComplete: (task: Task) => void;
-  onRestore: (task: Task) => void;
   titleRef: RefObject<HTMLInputElement | null>;
 }) {
   const [draft, setDraft] = useState(task);
@@ -635,31 +751,14 @@ function TaskEditor({
     <div className="editor">
       <div className="editor-meta">
         <span>
-          {archived
-            ? `Completed ${formatDate(task.completedAt ?? task.modifiedAt)}`
-            : `Updated ${formatDate(task.modifiedAt)}`}
+          {status === "deleted"
+            ? `Deleted ${formatDate(task.deletedAt ?? task.modifiedAt)}`
+            : status === "archived"
+              ? `Completed ${formatDate(task.completedAt ?? task.modifiedAt)}`
+              : `Updated ${formatDate(task.modifiedAt)}`}
         </span>
-        {archived ? (
-          <button
-            type="button"
-            className="complete-text"
-            onClick={() => onRestore(task)}
-          >
-            <ArchiveRestore size={15} />
-            Restore to stack
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="complete-text"
-            onClick={() => onComplete(task)}
-          >
-            <Check size={15} />
-            Complete
-          </button>
-        )}
       </div>
-      {archived ? (
+      {status !== "active" ? (
         <>
           <h1>{task.title}</h1>
           <div className="tag">

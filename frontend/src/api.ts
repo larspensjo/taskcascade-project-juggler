@@ -14,11 +14,13 @@ export type Task = {
   createdAt: string;
   modifiedAt: string;
   completedAt: string | null;
+  deletedAt: string | null;
 };
 export type Bootstrap = {
   projects: Project[];
   activeTasks: Task[];
   archivedTasks: Task[];
+  deletedTasks: Task[];
   preferences: { key: string; value: string }[];
 };
 
@@ -68,6 +70,13 @@ export const api = {
     request<Task>(`/tasks/${id}/complete`, { method: "POST" }),
   restoreTask: (id: string) =>
     request<Task>(`/tasks/${id}/restore`, { method: "POST" }),
+  deleteTask: (id: string) =>
+    request<Task>(`/tasks/${id}/delete`, { method: "POST" }),
+  undeleteTask: (id: string, to: "stack" | "archive") =>
+    request<Task>(`/tasks/${id}/undelete`, {
+      method: "POST",
+      body: JSON.stringify({ to }),
+    }),
   reorderTask: (id: string, targetTaskId: string | null, after: boolean) =>
     request<string[]>(`/tasks/${id}/reorder`, {
       method: "POST",
