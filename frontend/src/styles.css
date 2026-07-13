@@ -246,9 +246,6 @@ select:focus-visible {
   background: var(--surface-2);
   color: var(--text-primary);
 }
-.sidebar-spacer {
-  flex: 1;
-}
 .task-pane {
   padding: 22px 13px;
   overflow: auto;

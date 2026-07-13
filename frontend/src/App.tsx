@@ -466,6 +466,34 @@ export function App() {
             <FileText size={16} />
             All tasks <span>{active.length}</span>
           </button>
+          <button
+            type="button"
+            className={`nav-item${view === "archive" ? " active" : ""}${
+              dropHover === "archive" ? " drop-ready" : ""
+            }`}
+            onClick={() => {
+              setView("archive");
+              setQuery("");
+            }}
+            {...dropTargetProps("archive")}
+          >
+            <Archive size={16} />
+            Archive <span>{archived.length}</span>
+          </button>
+          <button
+            type="button"
+            className={`nav-item${view === "deleted" ? " active" : ""}${
+              dropHover === "trash" ? " drop-ready" : ""
+            }`}
+            onClick={() => {
+              setView("deleted");
+              setQuery("");
+            }}
+            {...dropTargetProps("trash")}
+          >
+            <Trash2 size={16} />
+            Deleted <span>{deleted.length}</span>
+          </button>
           <div className="sidebar-heading with-action">
             PROJECTS{" "}
             <button
@@ -517,35 +545,6 @@ export function App() {
               </button>
             </div>
           ))}
-          <div className="sidebar-spacer" />
-          <button
-            type="button"
-            className={`nav-item${view === "archive" ? " active" : ""}${
-              dropHover === "archive" ? " drop-ready" : ""
-            }`}
-            onClick={() => {
-              setView("archive");
-              setQuery("");
-            }}
-            {...dropTargetProps("archive")}
-          >
-            <Archive size={16} />
-            Archive <span>{archived.length}</span>
-          </button>
-          <button
-            type="button"
-            className={`nav-item${view === "deleted" ? " active" : ""}${
-              dropHover === "trash" ? " drop-ready" : ""
-            }`}
-            onClick={() => {
-              setView("deleted");
-              setQuery("");
-            }}
-            {...dropTargetProps("trash")}
-          >
-            <Trash2 size={16} />
-            Deleted <span>{deleted.length}</span>
-          </button>
         </aside>
         <section className="task-pane">
           <div className="pane-heading">
