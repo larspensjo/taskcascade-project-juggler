@@ -680,8 +680,8 @@ function TaskList({
     onDragEnd();
   };
   return (
-    <ol className="task-list">
-      {tasks.map((task, index) => {
+    <ul className="task-list">
+      {tasks.map((task) => {
         const project = projects.find(
           (candidate) => candidate.id === task.projectId,
         );
@@ -707,7 +707,6 @@ function TaskList({
               className="task-select"
               onClick={() => onSelect(task)}
             >
-              <span className="task-order">{index + 1}</span>
               {draggable && <GripVertical className="grab" size={17} />}
               <span className="task-copy">
                 <strong>{task.title}</strong>
@@ -717,7 +716,7 @@ function TaskList({
           </li>
         );
       })}
-    </ol>
+    </ul>
   );
 }
 

@@ -326,12 +326,6 @@ select:focus-visible {
   border-color: var(--hairline);
   border-left-color: var(--project-color, var(--hairline));
 }
-.task-order {
-  font: 11px "JetBrains Mono", monospace;
-  color: var(--text-muted);
-  width: 19px;
-  text-align: right;
-}
 .grab {
   color: var(--text-muted);
   cursor: grab;
