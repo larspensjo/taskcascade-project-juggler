@@ -167,8 +167,8 @@ try {
         Write-Host "Creating snapshot - data root $RealDataRoot - snapshot $SnapshotDir"
         Push-Location $frontend
         try { Invoke-Native 'npm.cmd' @('ci'); Invoke-Native 'npm.cmd' @('run', 'build') } finally { Pop-Location }
-        Push-Location $backend
-        try { Invoke-Native 'cargo' @('build') } finally { Pop-Location }
+        Push-Location $repoRoot
+        try { Invoke-Native 'cargo' @('build', '-p', 'taskcascade-backend') } finally { Pop-Location }
         Assert-SnapshotStopped
         New-Item -ItemType Directory -Force -Path $SnapshotDir | Out-Null
         # Only these managed subdirectories are replaced, after successful builds.
@@ -178,7 +178,7 @@ try {
             if (Test-Path -LiteralPath $managed) { Remove-Item -LiteralPath $managed -Recurse -Force }
         }
         New-Item -ItemType Directory -Path (Join-Path $SnapshotDir 'backend'), (Join-Path $SnapshotDir 'frontend/dist') | Out-Null
-        Copy-Item -LiteralPath (Join-Path $backend 'target/debug/taskcascade-backend.exe') -Destination (Join-Path $SnapshotDir 'backend/taskcascade-backend.exe')
+        Copy-Item -LiteralPath (Join-Path $repoRoot 'target/debug/taskcascade-backend.exe') -Destination (Join-Path $SnapshotDir 'backend/taskcascade-backend.exe')
         Get-ChildItem -LiteralPath (Join-Path $frontend 'dist') -Force | Copy-Item -Destination (Join-Path $SnapshotDir 'frontend/dist') -Recurse
         $files = @(Get-SnapshotFiles | ForEach-Object {
             [ordered]@{ path = [IO.Path]::GetRelativePath($SnapshotDir, $_.FullName).Replace('\', '/'); sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash }
@@ -224,8 +224,8 @@ try {
         try { Invoke-Native 'npm.cmd' @('install') } finally { Pop-Location }
     }
     if (-not $SkipBuild) {
-        Push-Location $backend
-        try { Invoke-Native 'cargo' @('build') } finally { Pop-Location }
+        Push-Location $repoRoot
+        try { Invoke-Native 'cargo' @('build', '-p', 'taskcascade-backend') } finally { Pop-Location }
         Push-Location $frontend
         try { Invoke-Native 'npm.cmd' @('run', 'build') } finally { Pop-Location }
     }
@@ -234,7 +234,7 @@ try {
     $resolvedBackendPort = Resolve-AvailablePort $BackendPort @($resolvedFrontendPort)
     $env:TASKCASCADE_DATA_DIR = $dataDirectory
     $env:TASKCASCADE_PORT = $resolvedBackendPort
-    $backendProcess = Start-Process -FilePath (Join-Path $backend 'target/debug/taskcascade-backend.exe') -WorkingDirectory $backend -PassThru -WindowStyle Hidden
+    $backendProcess = Start-Process -FilePath (Join-Path $repoRoot 'target/debug/taskcascade-backend.exe') -WorkingDirectory $backend -PassThru -WindowStyle Hidden
     # cmd.exe stays alive while Vite runs, so process-tree cleanup owns both.
     $frontendCommand = "call npm.cmd run dev -- --host 127.0.0.1 --port $resolvedFrontendPort --strictPort"
     $frontendProcess = Start-Process -FilePath 'cmd.exe' -ArgumentList @('/d', '/s', '/c', $frontendCommand) -WorkingDirectory $frontend -PassThru -WindowStyle Hidden
