@@ -17,6 +17,9 @@ target
 frontend/node_modules/
 frontend/dist/
 
+# Desktop/Tauri generated output
+desktop/gen/
+
 # Local runtime logs
 .local/
 engine.log

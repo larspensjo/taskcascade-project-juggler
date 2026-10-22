@@ -1,6 +1,7 @@
 use std::{env, path::PathBuf};
 
 use taskcascade_backend::app;
+use tower_http::services::ServeDir;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -17,7 +18,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let port = env::var("TASKCASCADE_PORT").unwrap_or_else(|_| "8080".into());
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}")).await?;
     println!("TaskCascade listening at http://127.0.0.1:{port}");
-    axum::serve(listener, app::router(state)).await?;
+    axum::serve(
+        listener,
+        app::router(state).fallback_service(ServeDir::new("../frontend/dist")),
+    )
+    .await?;
     Ok(())
 }
 

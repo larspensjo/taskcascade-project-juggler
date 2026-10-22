@@ -13,7 +13,6 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
     FromRow, SqlitePool,
 };
-use tower_http::{cors::CorsLayer, services::ServeDir};
 use uuid::Uuid;
 
 use crate::domain::relocate;
@@ -274,8 +273,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/tasks/{id}/undelete", post(undelete_task))
         .route("/api/tasks/{id}/reorder", post(reorder_task))
         .route("/api/preferences/{key}", put(save_preference))
-        .fallback_service(ServeDir::new("../frontend/dist"))
-        .layer(CorsLayer::permissive())
         .with_state(state)
 }
 

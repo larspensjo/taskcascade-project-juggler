@@ -773,7 +773,7 @@ Expected: FAIL. The desktop crate has no implementation yet.
 
 Move `ServeDir` into `backend/src/main.rs` and delete the CORS layer
 altogether. Every remaining browser path is same-origin: either the Vite proxy
-or the backend serving `dist` itself. The 16 backend tests stay untouched and
+or the backend serving `dist` itself. The 19 backend tests stay untouched and
 must pass.
 
 - [ ] **Step 4: Frontend prerequisites for the CSP**

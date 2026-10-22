@@ -6,6 +6,7 @@ export default defineConfig(({ mode }) => {
     loadEnv(mode, ".", "TASKCASCADE_").TASKCASCADE_PORT || "8080";
   return {
     plugins: [react()],
+    build: { assetsInlineLimit: 0 },
     server: { proxy: { "/api": `http://127.0.0.1:${backendPort}` } },
   };
 });

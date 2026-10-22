@@ -2,6 +2,8 @@
 [CmdletBinding(DefaultParameterSetName = 'Development')]
 param(
     [Parameter(ParameterSetName = 'Development')]
+    [switch]$Desktop,
+    [Parameter(ParameterSetName = 'Development')]
     [switch]$SkipInstall,
     [Parameter(ParameterSetName = 'Development')]
     [switch]$SkipBuild,
@@ -27,6 +29,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if ($Desktop -and ($PSBoundParameters.ContainsKey('FrontendPort') -or $PSBoundParameters.ContainsKey('BackendPort'))) {
+    throw '-Desktop cannot be combined with -FrontendPort or -BackendPort; desktop mode does not use TCP ports.'
+}
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $backend = Join-Path $repoRoot "backend"
 $frontend = Join-Path $repoRoot "frontend"
@@ -224,12 +229,21 @@ try {
         try { Invoke-Native 'npm.cmd' @('install') } finally { Pop-Location }
     }
     if (-not $SkipBuild) {
-        Push-Location $repoRoot
-        try { Invoke-Native 'cargo' @('build', '-p', 'taskcascade-backend') } finally { Pop-Location }
         Push-Location $frontend
         try { Invoke-Native 'npm.cmd' @('run', 'build') } finally { Pop-Location }
+        $package = if ($Desktop) { 'taskcascade-desktop' } else { 'taskcascade-backend' }
+        Push-Location $repoRoot
+        try { Invoke-Native 'cargo' @('build', '-p', $package) } finally { Pop-Location }
     }
     New-Item -ItemType Directory -Force -Path $dataDirectory | Out-Null
+    if ($Desktop) {
+        $env:TASKCASCADE_DATA_DIR = $dataDirectory
+        Write-Host "DEVELOPMENT - $dataDirectory" -ForegroundColor Cyan
+        Write-Host 'Close the window to stop. Ctrl+C here hard-kills the window without saving a pending edit.'
+        $desktopProcess = Start-Process -FilePath (Join-Path $repoRoot 'target/debug/taskcascade-desktop.exe') -WorkingDirectory $repoRoot -Wait -NoNewWindow -PassThru
+        if ($desktopProcess.ExitCode -ne 0) { throw "Desktop exited with code $($desktopProcess.ExitCode)." }
+        return
+    }
     $resolvedFrontendPort = Resolve-AvailablePort $FrontendPort
     $resolvedBackendPort = Resolve-AvailablePort $BackendPort @($resolvedFrontendPort)
     $env:TASKCASCADE_DATA_DIR = $dataDirectory
