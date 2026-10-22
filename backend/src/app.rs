@@ -18,6 +18,161 @@ use uuid::Uuid;
 
 use crate::domain::relocate;
 
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseSummary {
+    pub integrity: String,
+    pub schema_version: Option<i64>,
+    pub projects: i64,
+    pub active_tasks: i64,
+    pub archived_tasks: i64,
+    pub deleted_tasks: i64,
+    pub preferences: i64,
+    pub newest_modified_at: Option<String>,
+}
+
+#[derive(Debug)]
+pub enum SummaryError {
+    Missing(std::path::PathBuf),
+    Database(sqlx::Error),
+}
+
+impl std::fmt::Display for SummaryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing(path) => write!(f, "Database file does not exist: {}", path.display()),
+            Self::Database(error) => write!(f, "Database summary failed: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for SummaryError {}
+
+/// Opens an existing file without running migrations or seeding; never creates one.
+pub async fn summarize_database(path: &std::path::Path) -> Result<DatabaseSummary, SummaryError> {
+    if !path.is_file() {
+        return Err(SummaryError::Missing(path.to_owned()));
+    }
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(false),
+        )
+        .await
+        .map_err(SummaryError::Database)?;
+    let result = async {
+        let integrity: Vec<String> = sqlx::query_scalar("PRAGMA integrity_check")
+            .fetch_all(&pool)
+            .await?;
+        Ok(DatabaseSummary {
+            integrity: integrity.join("\n"),
+            schema_version: sqlx::query_scalar("SELECT MAX(version) FROM _sqlx_migrations")
+                .fetch_one(&pool)
+                .await?,
+            projects: sqlx::query_scalar("SELECT COUNT(*) FROM projects")
+                .fetch_one(&pool)
+                .await?,
+            active_tasks: sqlx::query_scalar(
+                "SELECT COUNT(*) FROM tasks WHERE completed_at IS NULL AND deleted_at IS NULL",
+            )
+            .fetch_one(&pool)
+            .await?,
+            archived_tasks: sqlx::query_scalar(
+                "SELECT COUNT(*) FROM tasks WHERE completed_at IS NOT NULL AND deleted_at IS NULL",
+            )
+            .fetch_one(&pool)
+            .await?,
+            deleted_tasks: sqlx::query_scalar(
+                "SELECT COUNT(*) FROM tasks WHERE deleted_at IS NOT NULL",
+            )
+            .fetch_one(&pool)
+            .await?,
+            preferences: sqlx::query_scalar("SELECT COUNT(*) FROM preferences")
+                .fetch_one(&pool)
+                .await?,
+            newest_modified_at: sqlx::query_scalar("SELECT MAX(modified_at) FROM tasks")
+                .fetch_one(&pool)
+                .await?,
+        })
+    }
+    .await;
+    pool.close().await;
+    result.map_err(SummaryError::Database)
+}
+
+// Kept here so fixture SQL, like production SQL, stays in the app layer.
+#[doc(hidden)]
+pub mod test_support {
+    use super::*;
+    use sqlx::{Connection, SqliteConnection};
+
+    pub enum FixtureKind {
+        Plain,
+        Wal,
+    }
+
+    pub async fn build_fixture(
+        dir: &std::path::Path,
+        kind: FixtureKind,
+    ) -> (DatabaseSummary, Option<SqliteConnection>) {
+        std::fs::create_dir_all(dir).expect("fixture directory");
+        assert_eq!(
+            std::fs::read_dir(dir).unwrap().count(),
+            0,
+            "fixture directory must be empty"
+        );
+        let path = dir.join("taskcascade.sqlite");
+        let state = AppState::connect(&format!("sqlite://{}", path.display()))
+            .await
+            .expect("fixture database");
+        for (position, (id, completed, deleted)) in [
+            ("active-1", None, None),
+            ("active-2", None, None),
+            ("archived", Some("2026-01-02"), None),
+            ("deleted", None, Some("2026-01-03")),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            sqlx::query("INSERT INTO tasks (id, title, project_id, position, created_at, modified_at, completed_at, deleted_at) VALUES (?, ?, (SELECT id FROM projects LIMIT 1), ?, '2026-01-01', '2026-01-03', ?, ?)")
+                .bind(id).bind(id).bind(position as i64).bind(completed).bind(deleted).execute(state.0.as_ref()).await.unwrap();
+        }
+        sqlx::query("INSERT INTO preferences (key, value) VALUES ('fixture', 'synthetic')")
+            .execute(state.0.as_ref())
+            .await
+            .unwrap();
+        state.0.close().await;
+        let mut expected = summarize_database(&path).await.unwrap();
+        let wal_connection = if matches!(kind, FixtureKind::Wal) {
+            let mut connection = SqliteConnection::connect_with(
+                &SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(false),
+            )
+            .await
+            .unwrap();
+            sqlx::query("PRAGMA journal_mode = WAL")
+                .execute(&mut connection)
+                .await
+                .unwrap();
+            sqlx::query("PRAGMA wal_autocheckpoint = 0")
+                .execute(&mut connection)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO tasks (id, title, project_id, position, created_at, modified_at) VALUES ('sentinel', 'WAL-SENTINEL', (SELECT id FROM projects LIMIT 1), 2, '2026-02-01', '2026-02-01')").execute(&mut connection).await.unwrap();
+            expected.active_tasks += 1;
+            expected.newest_modified_at = Some("2026-02-01".to_owned());
+            // The caller keeps this open until it has copied the WAL fixture.
+            Some(connection)
+        } else {
+            None
+        };
+        (expected, wal_connection)
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState(Arc<SqlitePool>);
 

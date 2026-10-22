@@ -174,9 +174,12 @@ consequences reach the decision log in the final phase.
      between restarts.
    - Both switches are removed in Phase 9.
 2. **Scratch data lives in `.local/dev-data/`.** The old `.local/data/` is never
-   reused. Every launcher refuses to start while
+   reused. Only `start.ps1`'s default development mode refuses to start while
    `.local/data/taskcascade.sqlite` or any of its sidecars still exists, and
-   points to the migration script.
+   points to the migration script. No parameter redirects or disables this
+   guard. `-CreateRealDataSnapshot` skips it because snapshot creation touches
+   no task data; `-RealData` skips it but still refuses before migration because
+   `<RealDataRoot>\taskcascade.sqlite` does not exist yet.
 3. **One resolved location decides identity and creation; the build profile
    decides defaults and assets.**
    - Release builds default to the real location and debug builds to
@@ -450,10 +453,13 @@ default.
 
 - **Scratch location.** `$dataDirectory` becomes the absolute
   `<repo>\.local\dev-data`.
-- **Legacy guard.** Before any build, throw if
+- **Legacy guard.** In default development mode only, before any build, throw if
   `.local\data\taskcascade.sqlite`, `-wal`, `-shm` or `-journal` exists:
   "Your real tasks are still in .local\data. Run scripts\migrate-data.ps1
-  first."
+  first." No parameter redirects or disables the guard. `-CreateRealDataSnapshot`
+  skips it because it touches no task data; `-RealData` skips it but still
+  refuses before migration because `<RealDataRoot>\taskcascade.sqlite` does
+  not exist yet.
 - **Rehearsal parameters.**
   - `-RealDataRoot` (default `$env:LOCALAPPDATA\TaskCascade`) and
     `-SnapshotDir` (default `<repo>\.local\real-run`). They exist only so
@@ -2053,7 +2059,7 @@ Consequences: Interface changes are seen by rebuilding and reloading or reopenin
 
 Decision: Lars's tasks live in `%LOCALAPPDATA%\TaskCascade\taskcascade.sqlite`, outside the repository and outside any synced folder. The daily app is an installed, self-contained copy (frontend embedded in the release binary) placed in `%LOCALAPPDATA%\Programs\TaskCascade` by `scripts/install.ps1` with a Start-menu shortcut; rebuilding in the repository never changes it. `scripts/start.ps1` opens a development window on scratch data in `.local/dev-data`. The database location is resolved once by filesystem identity — not by path spelling — and that one result decides both the window's identity and whether a missing database may be created: the real location runs as `se.pensjo.taskcascade`, anything else as `se.pensjo.taskcascade.dev` titled "TaskCascade (dev)", and directories nested in or containing the real one, or a database file that is the real one under another name, are refused at startup. Each copy is a single instance; a second launch focuses the first. No build creates the real database implicitly; a missing database is a native startup dialog naming the path, and creation needs `TASKCASCADE_CREATE_DATABASE=1`.
 Context: The real tasks had accumulated in the repository's scratch file, where development runs and cleanups could touch them; a one-time verified migration moved them. Running the daily app from the build tree was rejected because a running executable blocks rebuilds and half-built work would become the daily app. A synced Documents folder was rejected because a live SQLite file and its sidecars under sync risk corruption. A second window on the same database would silently overwrite notes, because a task update writes the whole record and nothing refetches; comparing path strings would have let a differently spelled path to the real directory open it as a second, "development" copy.
-Consequences: Updating the daily app means re-running the install script with TaskCascade closed. Launchers refuse to start while the pre-migration `.local/data` database exists. The startup log and the failure dialog name the resolved database path. The default real path is defined in the desktop crate and repeated in the scripts; changing it means changing all of them. Script rehearsals use synthetic fixtures and never the real paths. Backups remain future work.
+Consequences: Updating the daily app means re-running the install script with TaskCascade closed. Only `start.ps1`'s default development mode refuses to start while the pre-migration `.local/data` database or its sidecars exists; no parameter redirects or disables the guard. `-CreateRealDataSnapshot` skips it because snapshot creation touches no task data; `-RealData` skips it but still refuses before migration because `<RealDataRoot>\taskcascade.sqlite` does not exist yet. The startup log and the failure dialog name the resolved database path. The default real path is defined in the desktop crate and repeated in the scripts; changing it means changing all of them. Script rehearsals use synthetic fixtures and never the real paths. Backups remain future work.
 
 ## YYYY-MM-DD — Inside the window: links leave, and edits are confirmed before they can be lost
 
