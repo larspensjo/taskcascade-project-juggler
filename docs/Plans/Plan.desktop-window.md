@@ -2225,6 +2225,13 @@ plan's own choices are listed under "Decisions this plan settles".
   brief.
 - **Single-instance hand-off to an older running copy.** The install script
   refuses to run while the installed copy is running.
+- **Relaunch during the shutdown tail.** The single-instance plugin releases
+  its mutex on `RunEvent::Exit` before the shell drains requests and closes
+  the database pool (up to 5 s). A relaunch can open the same SQLite file
+  during that tail; SQLite cross-process locking protects committed data,
+  and the old process admits no new API requests and has no UI. This overlap
+  is accepted. If a strict guarantee is ever needed, the shell must hold a
+  named mutex until `run()` returns.
 - **WebView2 runtime.** It is present on Windows 11 and is not bundled. The
   README states the prerequisite.
 - **The debug development window serves whatever `frontend/dist` holds.**

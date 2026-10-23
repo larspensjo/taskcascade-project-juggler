@@ -4,6 +4,7 @@ pub mod bridge;
 pub mod content_security_policy;
 pub mod data_location;
 pub mod diagnostics;
+pub mod identity;
 pub mod launch;
 pub mod lifecycle;
 pub mod startup_failure;

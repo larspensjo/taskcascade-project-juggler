@@ -234,6 +234,43 @@ pub fn resolve(inputs: &LocationInputs) -> Result<DataLocation, LocationError> {
 }
 
 #[cfg(test)]
+pub(crate) fn real_directory_aliases(root: &Path) -> Vec<PathBuf> {
+    let real = real_directory(root);
+    let mut aliases = vec![
+        real.join("..").join("TaskCascade"),
+        root.join(".").join("TaskCascade"),
+        PathBuf::from(format!("{}{}", real.display(), std::path::MAIN_SEPARATOR)),
+    ];
+    #[cfg(windows)]
+    {
+        aliases.push(PathBuf::from(
+            real.as_os_str().to_string_lossy().to_uppercase(),
+        ));
+        aliases.push(PathBuf::from(format!(r"\\?\{}", real.display())));
+    }
+    aliases
+}
+
+#[cfg(all(test, windows))]
+pub(crate) fn real_directory_junction(root: &Path) -> PathBuf {
+    let real = real_directory(root);
+    std::fs::create_dir(&real).unwrap();
+    let alias = root.join("alias");
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&alias)
+        .arg(&real)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    alias
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -316,21 +353,9 @@ mod tests {
             if exists {
                 std::fs::create_dir(&real).unwrap();
             }
-            let mut aliases = vec![
-                real.join("..").join("TaskCascade"),
-                root.path().join(".").join("TaskCascade"),
-                PathBuf::from(format!("{}{}", real.display(), std::path::MAIN_SEPARATOR)),
-            ];
-            #[cfg(windows)]
-            {
-                aliases.push(PathBuf::from(
-                    real.as_os_str().to_string_lossy().to_uppercase(),
-                ));
-                aliases.push(PathBuf::from(format!(r"\\?\{}", real.display())));
-            }
             let mut inputs = inputs(root.path());
             inputs.debug_build = true;
-            for alias in aliases.drain(..) {
+            for alias in real_directory_aliases(root.path()) {
                 inputs.data_dir_override = Some(alias.clone().into());
                 let location = resolve(&inputs).unwrap();
                 assert!(location.is_real, "{} (exists={exists})", alias.display());
@@ -349,20 +374,7 @@ mod tests {
     #[test]
     fn junction_is_real() {
         let root = tempfile::tempdir().unwrap();
-        let real = real_directory(root.path());
-        std::fs::create_dir(&real).unwrap();
-        let alias = root.path().join("alias");
-        let output = std::process::Command::new("cmd")
-            .args(["/C", "mklink", "/J"])
-            .arg(&alias)
-            .arg(&real)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let alias = real_directory_junction(root.path());
         let mut inputs = inputs(root.path());
         inputs.debug_build = true;
         inputs.data_dir_override = Some(alias.clone().into());

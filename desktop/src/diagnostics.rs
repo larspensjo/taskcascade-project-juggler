@@ -1,7 +1,7 @@
 use std::{
     fs::{File, OpenOptions},
     io::{self, Write},
-    path::{Path, PathBuf},
+    path::Path,
     sync::Mutex,
 };
 
@@ -11,7 +11,7 @@ const MAX_LOG_BYTES: u64 = 1024 * 1024;
 
 #[derive(Default)]
 struct Output {
-    path: Option<PathBuf>,
+    path_description: Option<String>,
     file: Option<File>,
 }
 
@@ -28,13 +28,21 @@ impl Diagnostics {
         debug_build: bool,
     ) {
         let path = location.directory.join("logs/taskcascade-desktop.log");
-        let opened = open_log(&path);
+        let (path_description, opened) = if location.may_create || location.directory.exists() {
+            (path.display().to_string(), open_log(&path))
+        } else {
+            let reason = "data directory is missing and creation is disabled";
+            (
+                format!("unavailable ({reason})"),
+                Err(io::Error::new(io::ErrorKind::NotFound, reason)),
+            )
+        };
         let error = opened.as_ref().err().map(ToString::to_string);
         *self
             .output
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = Output {
-            path: Some(path),
+            path_description: Some(path_description),
             file: opened.ok(),
         };
         self.log(&format!(
@@ -73,12 +81,9 @@ impl Diagnostics {
         self.output
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .path
-            .as_ref()
-            .map_or_else(
-                || "not initialized (data location unresolved)".to_owned(),
-                |path| path.display().to_string(),
-            )
+            .path_description
+            .clone()
+            .unwrap_or_else(|| "not initialized (data location unresolved)".to_owned())
     }
 }
 
@@ -162,5 +167,46 @@ mod tests {
         assert!(diagnostics
             .path_description()
             .contains("taskcascade-desktop.log"));
+    }
+
+    #[test]
+    fn missing_directory_without_creation_permission_leaves_log_unavailable() {
+        let root = tempfile::tempdir().unwrap();
+        let mut location = location(&root.path().join("missing"));
+        location.is_real = true;
+        location.may_create = false;
+        let diagnostics = Diagnostics::default();
+        diagnostics.initialize(&location, &location.database, false);
+        diagnostics.log("still reporting to stderr");
+        assert!(!location.directory.exists());
+        let description = diagnostics.path_description();
+        assert!(description.contains("unavailable"));
+        assert!(!description.contains("taskcascade-desktop.log"));
+        let message = crate::startup_failure::failure_message(
+            false,
+            "missing database",
+            &location.database.display().to_string(),
+            &description,
+        );
+        assert!(message.contains("Log: unavailable"));
+    }
+
+    #[test]
+    fn log_opens_when_directory_exists_or_creation_is_permitted() {
+        for (exists, may_create) in [(true, false), (true, true), (false, true)] {
+            let root = tempfile::tempdir().unwrap();
+            let mut location = location(&root.path().join("data"));
+            location.may_create = may_create;
+            if exists {
+                std::fs::create_dir(&location.directory).unwrap();
+            }
+            let diagnostics = Diagnostics::default();
+            diagnostics.initialize(&location, &location.database, false);
+            let path = location.directory.join("logs/taskcascade-desktop.log");
+            assert!(std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("startup profile=release"));
+            assert_eq!(diagnostics.path_description(), path.display().to_string());
+        }
     }
 }

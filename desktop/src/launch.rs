@@ -7,6 +7,7 @@ use std::{
     time::Duration,
 };
 use taskcascade_backend::app::{AppState, OpenError, OpenMode};
+use tauri::Manager;
 
 use crate::{
     assets::{self, AssetSource, FrontendDist},
@@ -14,9 +15,11 @@ use crate::{
     content_security_policy,
     data_location::{self, LocationInputs},
     diagnostics::Diagnostics,
+    identity::{self, Identity},
     lifecycle::{Lifecycle, SHUTDOWN_DEADLINE},
     startup_failure::{self, PanicReport},
 };
+use tauri_plugin_window_state::StateFlags;
 
 pub fn compose<S: AssetSource>(state: AppState, assets: S) -> Router {
     taskcascade_backend::app::router(state).fallback_service(assets::router(assets))
@@ -119,10 +122,12 @@ fn run_inner(
     };
     let location = data_location::resolve(&inputs).map_err(&describe_location_failure)?;
     *database = location.database.display().to_string();
+    let identity = identity::identity_for(&location);
     let canonical_database = data_location::filesystem_identity(&location.database)
         .map_err(describe_location_failure)?
         .canonical;
     diagnostics.initialize(&location, &canonical_database, inputs.debug_build);
+    log_identity(diagnostics, identity);
     *runtime = Some(
         tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -144,7 +149,40 @@ fn run_inner(
     let setup_outcome = Arc::new(OnceLock::new());
     let captured_outcome = Arc::clone(&setup_outcome);
     let setup_panic_report = Arc::clone(panic_report);
+    let setup_diagnostics = Arc::clone(diagnostics);
+    let single_instance_diagnostics = Arc::clone(diagnostics);
     let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(
+            move |app, _argv, _cwd| {
+                let Some(window) = app.get_webview_window("main") else {
+                    single_instance_diagnostics
+                        .log("second launch arrived before main window existed");
+                    return;
+                };
+                let mut focused = true;
+                for (operation, result) in [
+                    ("unminimize", window.unminimize()),
+                    ("show", window.show()),
+                    ("focus", window.set_focus()),
+                ] {
+                    if let Err(error) = result {
+                        focused = false;
+                        single_instance_diagnostics.log(&format!(
+                            "second launch could not {operation} main window: {error}"
+                        ));
+                    }
+                }
+                if focused {
+                    single_instance_diagnostics
+                        .log("second launch handed off; focused main window");
+                }
+            },
+        ))
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(StateFlags::all() - StateFlags::VISIBLE)
+                .build(),
+        )
         .register_asynchronous_uri_scheme_protocol(SCHEME, move |_context, request, responder| {
             let router = Arc::clone(&protocol_router);
             protocol_runtime.spawn(async move {
@@ -165,20 +203,32 @@ fn run_inner(
                     let state = AppState::open(&location.database, mode)
                         .await
                         .map_err(database_open_message)?;
+                    setup_diagnostics
+                        .log(&format!("database opened {}", location.database.display()));
                     setup_lifecycle.set_state(state.clone()).await;
                     Ok::<_, Box<dyn std::error::Error>>(state)
                 })?;
                 router
                     .set(compose(connected, FrontendDist))
                     .map_err(|_| "desktop router was already initialized")?;
-                tauri::WebviewWindowBuilder::new(app, "main", launch_url())
-                    .title("TaskCascade (dev)")
+                let window = tauri::WebviewWindowBuilder::new(app, "main", launch_url())
+                    .title(identity.title)
                     .inner_size(1280.0, 800.0)
                     .min_inner_size(900.0, 560.0)
+                    .visible(false)
                     // Mirrors frontend/src/styles.css --canvas.
                     .background_color(tauri::utils::config::Color(0x0a, 0x0b, 0x0d, 0xff))
                     .disable_drag_drop_handler()
                     .build()?;
+                let show_diagnostics = Arc::clone(&setup_diagnostics);
+                // Setup runs this synchronously on the main thread; build already restored
+                // window state through attach_window's on_window_ready hook.
+                app.run_on_main_thread(move || {
+                    if let Err(error) = window.show() {
+                        show_diagnostics
+                            .log(&format!("failed to show restored desktop window: {error}"));
+                    }
+                })?;
                 Ok(())
             })();
             // Tauri runs setup in run_return and panics if this hook returns Err.
@@ -192,8 +242,10 @@ fn run_inner(
                 app.handle().exit(1);
             }
             Ok(())
-        })
-        .build(tauri::generate_context!())?;
+        });
+    let mut context = tauri::generate_context!();
+    context.config_mut().identifier = identity.identifier.into();
+    let app = app.build(context)?;
     let exit_lifecycle = Arc::clone(lifecycle);
     let exit_runtime = runtime.handle().clone();
     app.run_return(move |_handle, event| {
@@ -206,6 +258,13 @@ fn run_inner(
         return Err(error.clone().into());
     }
     Ok(())
+}
+
+fn log_identity(diagnostics: &Diagnostics, identity: Identity) {
+    diagnostics.log(&format!(
+        "identity identifier={} title={}",
+        identity.identifier, identity.title
+    ));
 }
 
 enum SetupOutcome {
