@@ -24,8 +24,34 @@ export type Bootstrap = {
   preferences: { key: string; value: string }[];
 };
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`/api${path}`, {
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+const inFlight = new Set<Promise<unknown>>();
+
+function request<T>(path: string, init?: RequestInit): Promise<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const pending = new Promise<T>((yes, no) => {
+    resolve = yes;
+    reject = no;
+  });
+  inFlight.add(pending);
+  void send<T>(path, init).then(resolve, reject);
+  return pending.finally(() => {
+    inFlight.delete(pending);
+  });
+}
+
+async function send<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(path, {
     headers: { "Content-Type": "application/json" },
     ...init,
   });
@@ -33,23 +59,37 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const body = (await response.json().catch(() => ({}))) as {
       message?: string;
     };
-    throw new Error(body.message ?? "Something went wrong.");
+    throw new ApiError(
+      response.status,
+      body.message ?? "Something went wrong.",
+    );
   }
   return response.status === 204
     ? (undefined as T)
     : (response.json() as Promise<T>);
 }
 
+export async function settle(): Promise<void> {
+  while (inFlight.size) await Promise.allSettled([...inFlight]);
+}
+
+export function reportClose(
+  outcome: "saved" | "failed" | "discarded",
+): Promise<void> {
+  return request(`/desktop/close-ready?outcome=${outcome}`, { method: "POST" });
+}
+
 export const api = {
-  bootstrap: () => request<Bootstrap>("/bootstrap"),
-  search: (q: string) => request<Task[]>(`/search?q=${encodeURIComponent(q)}`),
+  bootstrap: () => request<Bootstrap>("/api/bootstrap"),
+  search: (q: string) =>
+    request<Task[]>(`/api/search?q=${encodeURIComponent(q)}`),
   createProject: (name: string, color?: string) =>
-    request<Project>("/projects", {
+    request<Project>("/api/projects", {
       method: "POST",
       body: JSON.stringify({ name, color }),
     }),
   updateProject: (id: string, body: { name: string; color: string }) =>
-    request<Project>(`/projects/${id}`, {
+    request<Project>(`/api/projects/${id}`, {
       method: "PUT",
       body: JSON.stringify(body),
     }),
@@ -57,33 +97,34 @@ export const api = {
     title: string;
     projectId: string;
     description?: string;
-  }) => request<Task>("/tasks", { method: "POST", body: JSON.stringify(body) }),
+  }) =>
+    request<Task>("/api/tasks", { method: "POST", body: JSON.stringify(body) }),
   updateTask: (
     id: string,
     body: Pick<Task, "title" | "projectId" | "description" | "scratchpad">,
   ) =>
-    request<Task>(`/tasks/${id}`, {
+    request<Task>(`/api/tasks/${id}`, {
       method: "PUT",
       body: JSON.stringify(body),
     }),
   completeTask: (id: string) =>
-    request<Task>(`/tasks/${id}/complete`, { method: "POST" }),
+    request<Task>(`/api/tasks/${id}/complete`, { method: "POST" }),
   restoreTask: (id: string) =>
-    request<Task>(`/tasks/${id}/restore`, { method: "POST" }),
+    request<Task>(`/api/tasks/${id}/restore`, { method: "POST" }),
   deleteTask: (id: string) =>
-    request<Task>(`/tasks/${id}/delete`, { method: "POST" }),
+    request<Task>(`/api/tasks/${id}/delete`, { method: "POST" }),
   undeleteTask: (id: string, to: "stack" | "archive") =>
-    request<Task>(`/tasks/${id}/undelete`, {
+    request<Task>(`/api/tasks/${id}/undelete`, {
       method: "POST",
       body: JSON.stringify({ to }),
     }),
   reorderTask: (id: string, targetTaskId: string | null, after: boolean) =>
-    request<string[]>(`/tasks/${id}/reorder`, {
+    request<string[]>(`/api/tasks/${id}/reorder`, {
       method: "POST",
       body: JSON.stringify({ targetTaskId, after }),
     }),
   savePreference: (key: string, value: string) =>
-    request<void>(`/preferences/${key}`, {
+    request<void>(`/api/preferences/${key}`, {
       method: "PUT",
       body: JSON.stringify({ value }),
     }),

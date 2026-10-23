@@ -12,7 +12,11 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::{
     assets::{self, AssetSource, FrontendDist},
-    bridge::{launch_url, serve_request, SCHEME},
+    bridge::{launch_url, serve_tracked_request, InFlight, SCHEME},
+    close_flush::{
+        self, CloseCoordinator, CloseEvent, CloseStep, EvalProbes, Outcome, ACK_DEADLINE,
+        BEFORE_CLOSE_SCRIPT, FLUSH_BACKSTOP,
+    },
     content_security_policy,
     data_location::{self, LocationInputs},
     diagnostics::Diagnostics,
@@ -23,8 +27,15 @@ use crate::{
 };
 use tauri_plugin_window_state::StateFlags;
 
-pub fn compose<S: AssetSource>(state: AppState, assets: S) -> Router {
-    taskcascade_backend::app::router(state).fallback_service(assets::router(assets))
+pub fn compose<S: AssetSource>(
+    state: AppState,
+    assets: S,
+    coordinator: Arc<CloseCoordinator>,
+    events: tokio::sync::mpsc::Sender<CloseEvent>,
+) -> Router {
+    taskcascade_backend::app::router(state)
+        .merge(close_flush::router(coordinator, events))
+        .fallback_service(assets::router(assets))
 }
 
 pub fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -48,7 +59,7 @@ pub fn run() -> Result<(), Box<dyn std::error::Error>> {
     let shutdown = panic::catch_unwind(AssertUnwindSafe(|| {
         if let Some(runtime) = runtime.take() {
             runtime.block_on(lifecycle.shutdown(SHUTDOWN_DEADLINE));
-            runtime.shutdown_timeout(lifecycle.remaining().max(Duration::from_millis(250)));
+            runtime.shutdown_timeout(lifecycle.remaining());
         }
     }));
     panic::set_hook(previous_hook);
@@ -144,7 +155,14 @@ fn run_inner(
     }
 
     let router = Arc::new(OnceLock::<Router>::new());
+    let coordinator = Arc::new(CloseCoordinator::default());
+    let (events, close_events) = tokio::sync::mpsc::channel(64);
+    let setup_coordinator = Arc::clone(&coordinator);
+    let setup_events = events.clone();
+    let eval_probes = Arc::new(EvalProbes::default());
+    let page_eval_probes = Arc::clone(&eval_probes);
     let protocol_router = Arc::clone(&router);
+    let protocol_in_flight = lifecycle.in_flight();
     let protocol_runtime = runtime.handle().clone();
     let setup_runtime = runtime.handle().clone();
     let setup_lifecycle = Arc::clone(lifecycle);
@@ -192,8 +210,9 @@ fn run_inner(
         )
         .register_asynchronous_uri_scheme_protocol(SCHEME, move |_context, request, responder| {
             let router = Arc::clone(&protocol_router);
+            let in_flight = Arc::clone(&protocol_in_flight);
             protocol_runtime.spawn(async move {
-                responder.respond(serve_protocol_request(&router, request).await);
+                responder.respond(serve_protocol_request(&router, request, &in_flight).await);
             });
         })
         .setup(move |app| {
@@ -216,7 +235,7 @@ fn run_inner(
                     Ok::<_, Box<dyn std::error::Error>>(state)
                 })?;
                 router
-                    .set(compose(connected, FrontendDist))
+                    .set(compose(connected, FrontendDist, Arc::clone(&setup_coordinator), setup_events.clone()))
                     .map_err(|_| "desktop router was already initialized")?;
                 let navigation_app = app.handle().clone();
                 let navigation_runtime = setup_runtime.clone();
@@ -224,6 +243,8 @@ fn run_inner(
                 let new_window_app = app.handle().clone();
                 let new_window_runtime = setup_runtime.clone();
                 let new_window_diagnostics = Arc::clone(&setup_diagnostics);
+                let probe_runtime = setup_runtime.clone();
+                let probe_diagnostics = Arc::clone(&setup_diagnostics);
                 let window = tauri::WebviewWindowBuilder::new(app, "main", launch_url())
                     .title(identity.title)
                     .inner_size(1280.0, 800.0)
@@ -233,6 +254,21 @@ fn run_inner(
                     .background_color(tauri::utils::config::Color(0x0a, 0x0b, 0x0d, 0xff))
                     .disable_drag_drop_handler()
                     .devtools(cfg!(debug_assertions))
+                    .on_page_load(move |window, payload| {
+                        if payload.event() != tauri::webview::PageLoadEvent::Finished { return; }
+                        let generation = page_eval_probes.begin();
+                        if let Err(error) = window.eval(format!("fetch('/desktop/eval-ok?generation={generation}', {{ method: 'POST' }})")) {
+                            probe_diagnostics.log(&format!("WARNING: eval self-test could not run: {error}"));
+                        }
+                        let eval_probes = Arc::clone(&page_eval_probes);
+                        let diagnostics = Arc::clone(&probe_diagnostics);
+                        probe_runtime.spawn(async move {
+                            tokio::time::sleep(Duration::from_secs(5)).await;
+                            if !eval_probes.finish(generation) {
+                                diagnostics.log("WARNING: eval self-test did not answer within 5 s; close handshake may be unavailable");
+                            }
+                        });
+                    })
                     .on_navigation(move |url| {
                         allow_navigation(
                             &navigation_runtime,
@@ -283,18 +319,163 @@ fn run_inner(
     let mut context = tauri::generate_context!();
     context.config_mut().identifier = identity.identifier.into();
     let app = app.build(context)?;
+    runtime.spawn(drive_close(
+        app.handle().clone(),
+        Arc::clone(&coordinator),
+        events.clone(),
+        close_events,
+        lifecycle.in_flight(),
+        Arc::clone(diagnostics),
+        eval_probes,
+    ));
     let exit_lifecycle = Arc::clone(lifecycle);
     let exit_runtime = runtime.handle().clone();
-    app.run_return(move |_handle, event| {
-        if matches!(event, tauri::RunEvent::Exit) {
+    app.run_return(move |handle, event| match event {
+        tauri::RunEvent::WindowEvent {
+            label,
+            event: tauri::WindowEvent::CloseRequested { api, .. },
+            ..
+        } if label == "main" => match coordinator.close_requested() {
+            CloseStep::StartHandshake => {
+                api.prevent_close();
+                let attempt = coordinator.attempt();
+                let evaluated = handle
+                    .get_webview_window("main")
+                    .is_some_and(|window| window.eval(BEFORE_CLOSE_SCRIPT).is_ok());
+                if !evaluated {
+                    let events = events.clone();
+                    exit_runtime.spawn(async move {
+                        let _ = events.send(CloseEvent::Outcome(Outcome::Error)).await;
+                    });
+                }
+                arm_close_timer(
+                    &exit_runtime,
+                    events.clone(),
+                    ACK_DEADLINE,
+                    CloseEvent::AckDeadline(attempt),
+                );
+            }
+            CloseStep::Prevent => api.prevent_close(),
+            _ => {}
+        },
+        tauri::RunEvent::Exit => {
             exit_runtime.block_on(exit_lifecycle.shutdown(SHUTDOWN_DEADLINE));
         }
+        _ => {}
     });
     runtime.block_on(lifecycle.shutdown(SHUTDOWN_DEADLINE));
     if let Some(SetupOutcome::Failed(error)) = setup_outcome.get() {
         return Err(error.clone().into());
     }
     Ok(())
+}
+
+fn arm_close_timer(
+    runtime: &tokio::runtime::Handle,
+    events: tokio::sync::mpsc::Sender<CloseEvent>,
+    delay: Duration,
+    event: CloseEvent,
+) {
+    runtime.spawn(async move {
+        tokio::time::sleep(delay).await;
+        let _ = events.send(event).await;
+    });
+}
+
+async fn drive_close(
+    app: tauri::AppHandle,
+    coordinator: Arc<CloseCoordinator>,
+    events: tokio::sync::mpsc::Sender<CloseEvent>,
+    mut receiver: tokio::sync::mpsc::Receiver<CloseEvent>,
+    in_flight: Arc<InFlight>,
+    diagnostics: Arc<Diagnostics>,
+    eval_probes: Arc<EvalProbes>,
+) {
+    while let Some(event) = receiver.recv().await {
+        let step = match event {
+            CloseEvent::Ack(attempt) => coordinator.ack(attempt),
+            CloseEvent::Outcome(outcome) => {
+                let step = coordinator.outcome(outcome);
+                if outcome == Outcome::Failed && step == CloseStep::StayOpen {
+                    diagnostics.log("close: page reported failure; window stays open");
+                }
+                step
+            }
+            CloseEvent::AckDeadline(attempt) => coordinator.ack_deadline(attempt),
+            CloseEvent::Backstop(attempt) => coordinator.backstop(attempt),
+            CloseEvent::Answer(attempt, answer) => coordinator.answer(attempt, answer),
+            CloseEvent::EvalOk(generation) => {
+                eval_probes.answer(generation);
+                diagnostics.log("eval self-test ok");
+                continue;
+            }
+        };
+        match step {
+            CloseStep::ArmBackstop => arm_close_timer(
+                &tokio::runtime::Handle::current(),
+                events.clone(),
+                FLUSH_BACKSTOP,
+                CloseEvent::Backstop(coordinator.attempt()),
+            ),
+            CloseStep::AskCloseAnyway => {
+                let answer_events = events.clone();
+                let runtime = tokio::runtime::Handle::current();
+                let attempt = coordinator.attempt();
+                let question_app = app.clone();
+                if let Err(error) = app.run_on_main_thread(move || {
+                    let answer = question_app
+                        .get_webview_window("main")
+                        .is_some_and(|window| ask_close_anyway(&window));
+                    runtime.spawn(async move {
+                        let _ = answer_events
+                            .send(CloseEvent::Answer(attempt, answer))
+                            .await;
+                    });
+                }) {
+                    diagnostics.log(&format!("could not show close question: {error}"));
+                    let _ = coordinator.answer(attempt, false);
+                }
+            }
+            CloseStep::BeginShutdown(reason) => {
+                diagnostics.log(match reason {
+                    "saved" => "close: page confirmed all edits saved",
+                    "discarded" => "close: user discarded unsaved changes",
+                    "no page answered" => "close: no page answered",
+                    _ => "close: closed without confirmation",
+                });
+                in_flight.stop_admitting();
+                app.exit(0);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(windows)]
+fn ask_close_anyway(window: &tauri::WebviewWindow) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        MessageBoxW, IDYES, MB_DEFBUTTON2, MB_ICONWARNING, MB_YESNO,
+    };
+    let title: Vec<u16> = "TaskCascade".encode_utf16().chain(Some(0)).collect();
+    let message: Vec<u16> = "TaskCascade could not confirm that your latest edits were saved. Close anyway? Unsaved changes may be lost.".encode_utf16().chain(Some(0)).collect();
+    let Ok(owner) = window.hwnd() else {
+        return false;
+    };
+    // SAFETY: Called on the main thread with the live main window's HWND;
+    // both UTF-16 buffers are terminated and live throughout the modal call.
+    unsafe {
+        MessageBoxW(
+            owner.0,
+            message.as_ptr(),
+            title.as_ptr(),
+            MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2,
+        ) == IDYES
+    }
+}
+
+#[cfg(not(windows))]
+fn ask_close_anyway(_window: &tauri::WebviewWindow) -> bool {
+    false
 }
 
 fn log_identity(diagnostics: &Diagnostics, identity: Identity) {
@@ -365,9 +546,10 @@ impl SetupOutcome {
 async fn serve_protocol_request(
     router: &OnceLock<Router>,
     request: http::Request<Vec<u8>>,
+    in_flight: &InFlight,
 ) -> http::Response<Vec<u8>> {
     match router.get() {
-        Some(router) => serve_request(router.clone(), request).await,
+        Some(router) => serve_tracked_request(router.clone(), request, in_flight).await,
         None => http::Response::builder()
             .status(http::StatusCode::SERVICE_UNAVAILABLE)
             .header(http::header::CONTENT_TYPE, "text/plain; charset=utf-8")
@@ -443,8 +625,12 @@ mod tests {
 
     #[tokio::test]
     async fn scheme_returns_service_unavailable_before_setup() {
-        let response =
-            serve_protocol_request(&OnceLock::new(), http::Request::new(Vec::new())).await;
+        let response = serve_protocol_request(
+            &OnceLock::new(),
+            http::Request::new(Vec::new()),
+            &InFlight::default(),
+        )
+        .await;
         assert_eq!(response.status(), http::StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             response.headers()[http::header::CONTENT_SECURITY_POLICY],

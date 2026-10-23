@@ -5,10 +5,11 @@ use std::{
 use taskcascade_backend::app::AppState;
 use tokio::sync::Mutex;
 
-use crate::diagnostics::Diagnostics;
+use crate::{bridge::InFlight, diagnostics::Diagnostics};
 
 pub const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(5);
 const RUNTIME_RESERVE: Duration = Duration::from_millis(500);
+const DRAIN_CAP: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShutdownReport {
@@ -29,6 +30,7 @@ pub struct Lifecycle {
     inner: Mutex<ShutdownState>,
     deadline: OnceLock<Instant>,
     diagnostics: Arc<Diagnostics>,
+    in_flight: Arc<InFlight>,
 }
 
 impl Lifecycle {
@@ -41,6 +43,10 @@ impl Lifecycle {
 
     pub async fn set_state(&self, state: AppState) {
         self.inner.lock().await.state = Some(state);
+    }
+
+    pub fn in_flight(&self) -> Arc<InFlight> {
+        Arc::clone(&self.in_flight)
     }
 
     pub fn remaining(&self) -> Duration {
@@ -59,9 +65,11 @@ impl Lifecycle {
         self.deadline.get_or_init(|| started + deadline);
         let state = inner.state.take();
         let had_state = state.is_some();
-        // Phase 7: stop admission and drain in-flight requests here, using this deadline.
-        // Until request tracking is installed, there is nothing to drain.
-        let drained = true;
+        self.in_flight.stop_admitting();
+        let drained = self
+            .in_flight
+            .wait_idle(DRAIN_CAP.min(self.remaining()))
+            .await;
         let close_budget = self.remaining().saturating_sub(RUNTIME_RESERVE);
         let pool_closed = match state {
             Some(_) if close_budget.is_zero() => false,
@@ -74,7 +82,11 @@ impl Lifecycle {
             drained,
             pool_closed,
             elapsed: started.elapsed(),
-            exhausted_at: (!pool_closed).then_some("pool close"),
+            exhausted_at: if !drained {
+                Some("drain")
+            } else {
+                (!pool_closed).then_some("pool close")
+            },
         };
         self.diagnostics
             .log(&format!("shutdown report: {report:?}"));
@@ -114,6 +126,35 @@ mod tests {
         let lifecycle = Lifecycle::new(diagnostics);
         lifecycle.set_state(state.clone()).await;
         (dir, state, lifecycle)
+    }
+
+    #[tokio::test]
+    async fn held_request_exhausts_short_drain_budget_and_skips_pool_close() {
+        let (_dir, state, lifecycle) = fixture().await;
+        let in_flight = lifecycle.in_flight();
+        let _held = in_flight.track().unwrap();
+        let started = Instant::now();
+        let report = lifecycle.shutdown(Duration::from_millis(500)).await;
+        assert!(started.elapsed() < Duration::from_millis(700));
+        assert!(!report.drained);
+        assert!(!report.pool_closed);
+        assert_eq!(report.exhausted_at, Some("drain"));
+        assert!(in_flight.track().is_none());
+        state.close().await;
+    }
+
+    #[tokio::test]
+    async fn held_request_times_out_at_drain_cap_but_pool_closes_in_remaining_budget() {
+        let (_dir, _state, lifecycle) = fixture().await;
+        let in_flight = lifecycle.in_flight();
+        let _held = in_flight.track().unwrap();
+        let started = Instant::now();
+        let report = lifecycle.shutdown(Duration::from_secs(3)).await;
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(report.elapsed >= Duration::from_secs(2));
+        assert!(!report.drained);
+        assert!(report.pool_closed);
+        assert_eq!(report.exhausted_at, Some("drain"));
     }
 
     #[tokio::test]

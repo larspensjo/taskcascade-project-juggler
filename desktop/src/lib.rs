@@ -1,6 +1,7 @@
 pub mod asset_policy;
 pub mod assets;
 pub mod bridge;
+pub mod close_flush;
 pub mod content_security_policy;
 pub mod data_location;
 pub mod diagnostics;

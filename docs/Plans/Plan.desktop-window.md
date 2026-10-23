@@ -215,6 +215,7 @@ consequences reach the decision log in the final phase.
      above the keyed editor, keyed by task id. The editor renders the
      coordinator's draft, or the stored task when no draft exists. There is no
      props-to-draft copying effect.
+     The mounted editor keeps showing the user's last typed fields when they equal the stored values after the server's normalisation.
    - Saves are serialized per task: at most one request per task is in flight,
      and newer edits coalesce into the next request.
    - A draft is dropped only when the revision the server confirmed is the
@@ -1562,8 +1563,9 @@ Desktop (`cargo test -p taskcascade-desktop`):
   - `/desktop/*` requests are never counted.
 - **`lifecycle`, held request.** Hold an `/api` guard and shut down with a
   500 ms deadline. The report has `drained == false` and
-  `exhausted_at == Some("drain")`, it returns within budget, and the pool
-  still closes in the remaining time.
+  `exhausted_at == Some("drain")`, it returns within budget, and pool closure
+  is skipped. A separate test with a 3 s deadline times out at the 2 s drain
+  cap and closes the pool within the remaining budget.
 
 - [ ] **Step 2: Run tests to verify they fail**
 

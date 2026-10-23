@@ -14,14 +14,32 @@ import {
   type DragEvent,
   type FormEvent,
   type RefObject,
+  useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { type Bootstrap, type Project, type Task, api } from "./api";
+import {
+  type Bootstrap,
+  type Project,
+  type Task,
+  api,
+  reportClose,
+  settle,
+} from "./api";
+import { type CloseResult, runCloseFlow } from "./closeFlow";
+import {
+  type Fields,
+  type SaveCoordinator,
+  createSaveCoordinator,
+  shownFields,
+} from "./saveCoordinator";
+import { registerBeforeClose } from "./shell";
 
 type View = "active" | "archive" | "search" | "deleted";
 type TaskStatus = "active" | "archived" | "deleted";
@@ -86,6 +104,54 @@ export function App() {
     project?: Project;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retryTaskId, setRetryTaskId] = useState<string | null>(null);
+  const [closing, setClosing] = useState(false);
+  const focusBeforeClose = useRef<HTMLElement | null>(null);
+  const changeClosing = useCallback((value: boolean) => {
+    if (value) {
+      focusBeforeClose.current =
+        document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+    }
+    setClosing(value);
+  }, []);
+  useLayoutEffect(() => {
+    if (!closing) {
+      const element = focusBeforeClose.current;
+      focusBeforeClose.current = null;
+      if (element?.isConnected) element.focus();
+    }
+  }, [closing]);
+  const [closeFailure, setCloseFailure] = useState<string | null>(null);
+  const closeRunning = useRef<Promise<CloseResult> | null>(null);
+  const coordinatorRef = useRef<SaveCoordinator | null>(null);
+  if (!coordinatorRef.current) {
+    coordinatorRef.current = createSaveCoordinator({
+      send: api.updateTask,
+      onSaved: (task) => {
+        setData(
+          (current) =>
+            current && {
+              ...current,
+              activeTasks: current.activeTasks.map((item) =>
+                item.id === task.id ? task : item,
+              ),
+            },
+        );
+        setResults((current) =>
+          current.map((item) => (item.id === task.id ? task : item)),
+        );
+      },
+      delayMs: 450,
+    });
+  }
+  const coordinator = coordinatorRef.current;
+  const saveVersion = useSyncExternalStore(
+    coordinator.subscribe,
+    coordinator.version,
+  );
+  const notifiedFailures = useRef(new Map<string, Error>());
   const [dragged, setDragged] = useState<Task | null>(null);
   const [dropHover, setDropHover] = useState<DropTarget | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -117,10 +183,12 @@ export function App() {
     return () => window.clearTimeout(timer);
   }, [query]);
 
-  const showError = (reason: unknown) =>
+  const showError = useCallback((reason: unknown) => {
+    setRetryTaskId(null);
     setError(
       reason instanceof Error ? reason.message : "Something went wrong.",
     );
+  }, []);
   const active = data?.activeTasks ?? [];
   const archived = data?.archivedTasks ?? [];
   const deleted = data?.deletedTasks ?? [];
@@ -142,6 +210,53 @@ export function App() {
     visibleTasks[0] ??
     null;
 
+  // The coordinator is an external store; its version triggers error discovery.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: failures change through the external-store version
+  useEffect(() => {
+    for (const task of data?.activeTasks ?? []) {
+      const failure = coordinator.error(task.id);
+      if (
+        task.id !== selected?.id &&
+        failure &&
+        notifiedFailures.current.get(task.id) !== failure
+      ) {
+        notifiedFailures.current.set(task.id, failure);
+        setError(`Not saved: “${task.title}” — ${failure.message}`);
+        setRetryTaskId(task.id);
+      }
+    }
+  }, [coordinator, saveVersion, data?.activeTasks, selected?.id]);
+
+  useEffect(
+    () =>
+      registerBeforeClose(() => {
+        if (closeRunning.current) return closeRunning.current;
+        const flow = runCloseFlow({
+          coordinator,
+          settle,
+          report: reportClose,
+          timeoutMs: 10_000,
+          setClosing: changeClosing,
+          showFailure: (reason) => {
+            const task =
+              data?.activeTasks.find((item) => coordinator.error(item.id)) ??
+              data?.activeTasks.find((item) => coordinator.draft(item.id));
+            setCloseFailure(
+              `Your changes to “${task?.title ?? "your tasks"}” could not be saved: ${reason.message}`,
+            );
+          },
+        });
+        closeRunning.current = flow;
+        void flow
+          .finally(() => {
+            closeRunning.current = null;
+          })
+          .catch(showError);
+        return flow;
+      }),
+    [coordinator, data?.activeTasks, showError, changeClosing],
+  );
+
   useEffect(() => {
     if (selected && !visibleTasks.some((task) => task.id === selected.id))
       setSelectedId(visibleTasks[0]?.id ?? null);
@@ -149,6 +264,7 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (coordinator.frozen()) return;
       if (event.ctrlKey && event.key.toLowerCase() === "n") {
         event.preventDefault();
         setNewTaskOpen(true);
@@ -196,9 +312,10 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [query, selected, view, visibleTasks]);
+  }, [coordinator, query, selected, view, visibleTasks]);
 
   async function changeSelection(next: string[]) {
+    if (coordinator.frozen()) return;
     setSelectedProjects(next);
     try {
       await api.savePreference("projectFilter", JSON.stringify(next));
@@ -210,6 +327,7 @@ export function App() {
     input: { name: string; color: string | null },
     existing?: Project,
   ) {
+    if (coordinator.frozen()) return;
     try {
       if (existing) {
         const project = await api.updateProject(existing.id, {
@@ -251,6 +369,7 @@ export function App() {
     projectId: string;
     description?: string;
   }) {
+    if (coordinator.frozen()) return;
     try {
       const task = await api.createTask(input);
       setData(
@@ -267,25 +386,32 @@ export function App() {
       showError(reason);
     }
   }
-  async function updateTask(updated: Task) {
-    try {
-      const task = await api.updateTask(updated.id, updated);
-      setData(
-        (current) =>
-          current && {
-            ...current,
-            activeTasks: current.activeTasks.map((item) =>
-              item.id === task.id ? task : item,
-            ),
-          },
-      );
-    } catch (reason) {
-      showError(reason);
-    }
+  async function savedAction<T>(
+    task: Task,
+    verb: string,
+    action: () => Promise<T>,
+  ): Promise<T | undefined> {
+    if (coordinator.frozen()) return;
+    if (statusOf(task) !== "active") return action();
+    const outcome = await coordinator.afterSaved(task.id, async () => {
+      if (coordinator.frozen()) return undefined;
+      return action();
+    });
+    if (outcome.ok) return outcome.value;
+    notifiedFailures.current.set(task.id, outcome.error);
+    setError(
+      `Not ${verb} — the latest edit to “${task.title}” could not be saved: ${outcome.error.message}`,
+    );
+    setRetryTaskId(task.id);
   }
   async function complete(task: Task) {
+    if (coordinator.frozen()) return;
     try {
-      const completed = await api.completeTask(task.id);
+      const completed = await savedAction(task, "completed", () =>
+        api.completeTask(task.id),
+      );
+      if (!completed) return;
+      coordinator.discard(task.id);
       setData(
         (current) =>
           current && {
@@ -302,6 +428,7 @@ export function App() {
     }
   }
   async function restore(task: Task) {
+    if (coordinator.frozen()) return;
     try {
       const restored = await api.restoreTask(task.id);
       setData(
@@ -321,8 +448,13 @@ export function App() {
     }
   }
   async function moveToTrash(task: Task) {
+    if (coordinator.frozen()) return;
     try {
-      const trashed = await api.deleteTask(task.id);
+      const trashed = await savedAction(task, "deleted", () =>
+        api.deleteTask(task.id),
+      );
+      if (!trashed) return;
+      coordinator.discard(task.id);
       setData(
         (current) =>
           current && {
@@ -342,6 +474,7 @@ export function App() {
     }
   }
   async function undelete(task: Task, to: "stack" | "archive") {
+    if (coordinator.frozen()) return;
     try {
       const undeleted = await api.undeleteTask(task.id, to);
       setData(
@@ -366,6 +499,7 @@ export function App() {
     }
   }
   function dropAction(target: DropTarget, task: Task): (() => void) | null {
+    if (coordinator.frozen()) return null;
     const status = statusOf(task);
     if (target === "archive" && status === "active")
       return () => complete(task);
@@ -401,8 +535,12 @@ export function App() {
     setDropHover(null);
   };
   async function reorder(task: Task, target: Task, after: boolean) {
+    if (coordinator.frozen()) return;
     try {
-      const order = await api.reorderTask(task.id, target.id, after);
+      const order = await savedAction(task, "moved", () =>
+        api.reorderTask(task.id, target.id, after),
+      );
+      if (!order) return;
       setData(
         (current) =>
           current && {
@@ -424,220 +562,285 @@ export function App() {
 
   if (!data) return <main className="loading">Opening your task stack…</main>;
   return (
-    <main className="app-shell">
-      <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">↗</span>
-          <span>TaskCascade</span>
-        </div>
-        <label className="search">
-          <Search size={16} />
-          <input
-            ref={searchRef}
-            value={query}
-            onChange={(event) => runSearch(event.target.value)}
-            placeholder="Search tasks…"
-          />
-          <kbd>Ctrl F</kbd>
-        </label>
-        <button
-          type="button"
-          className="primary"
-          onClick={() => setNewTaskOpen(true)}
-        >
-          <Plus size={17} />
-          New task <kbd>Ctrl N</kbd>
-        </button>
-      </header>
-      <div className="workspace">
-        <aside className="sidebar">
-          <div className="sidebar-heading">WORKSPACE</div>
+    <>
+      <main className="app-shell" inert={closing}>
+        <header className="topbar">
+          <div className="brand">
+            <span className="brand-mark">↗</span>
+            <span>TaskCascade</span>
+          </div>
+          <label className="search">
+            <Search size={16} />
+            <input
+              ref={searchRef}
+              value={query}
+              onChange={(event) => runSearch(event.target.value)}
+              placeholder="Search tasks…"
+            />
+            <kbd>Ctrl F</kbd>
+          </label>
           <button
             type="button"
-            className={
-              dropHover === "stack" ? "nav-item drop-ready" : "nav-item"
-            }
-            onClick={() => {
-              setView("active");
-              changeSelection(data.projects.map((project) => project.id));
-            }}
-            {...dropTargetProps("stack")}
+            className="primary"
+            onClick={() => setNewTaskOpen(true)}
           >
-            <FileText size={16} />
-            All tasks <span>{active.length}</span>
+            <Plus size={17} />
+            New task <kbd>Ctrl N</kbd>
           </button>
-          <button
-            type="button"
-            className={`nav-item${view === "archive" ? " active" : ""}${
-              dropHover === "archive" ? " drop-ready" : ""
-            }`}
-            onClick={() => {
-              setView("archive");
-              setQuery("");
-            }}
-            {...dropTargetProps("archive")}
-          >
-            <Archive size={16} />
-            Archive <span>{archived.length}</span>
-          </button>
-          <button
-            type="button"
-            className={`nav-item${view === "deleted" ? " active" : ""}${
-              dropHover === "trash" ? " drop-ready" : ""
-            }`}
-            onClick={() => {
-              setView("deleted");
-              setQuery("");
-            }}
-            {...dropTargetProps("trash")}
-          >
-            <Trash2 size={16} />
-            Deleted <span>{deleted.length}</span>
-          </button>
-          <div className="sidebar-heading with-action">
-            PROJECTS{" "}
+        </header>
+        <div className="workspace">
+          <aside className="sidebar">
+            <div className="sidebar-heading">WORKSPACE</div>
             <button
               type="button"
-              aria-label="Add project"
-              onClick={() => setProjectDialog({})}
+              className={
+                dropHover === "stack" ? "nav-item drop-ready" : "nav-item"
+              }
+              onClick={() => {
+                setView("active");
+                changeSelection(data.projects.map((project) => project.id));
+              }}
+              {...dropTargetProps("stack")}
             >
-              <Plus size={15} />
+              <FileText size={16} />
+              All tasks <span>{active.length}</span>
             </button>
-          </div>
-          {data.projects.map((project) => (
-            <div
-              key={project.id}
-              className="project-row"
-              style={projectStyle(project.color)}
+            <button
+              type="button"
+              className={`nav-item${view === "archive" ? " active" : ""}${
+                dropHover === "archive" ? " drop-ready" : ""
+              }`}
+              onClick={() => {
+                setView("archive");
+                setQuery("");
+              }}
+              {...dropTargetProps("archive")}
             >
+              <Archive size={16} />
+              Archive <span>{archived.length}</span>
+            </button>
+            <button
+              type="button"
+              className={`nav-item${view === "deleted" ? " active" : ""}${
+                dropHover === "trash" ? " drop-ready" : ""
+              }`}
+              onClick={() => {
+                setView("deleted");
+                setQuery("");
+              }}
+              {...dropTargetProps("trash")}
+            >
+              <Trash2 size={16} />
+              Deleted <span>{deleted.length}</span>
+            </button>
+            <div className="sidebar-heading with-action">
+              PROJECTS{" "}
               <button
                 type="button"
-                className={
-                  view === "active" && selectedProjects.includes(project.id)
-                    ? "nav-item active"
-                    : "nav-item"
-                }
-                onClick={(event) => {
-                  setView("active");
-                  changeSelection(
-                    event.ctrlKey || event.metaKey
-                      ? toggleId(selectedProjects, project.id)
-                      : [project.id],
-                  );
+                aria-label="Add project"
+                onClick={() => setProjectDialog({})}
+              >
+                <Plus size={15} />
+              </button>
+            </div>
+            {data.projects.map((project) => (
+              <div
+                key={project.id}
+                className="project-row"
+                style={projectStyle(project.color)}
+              >
+                <button
+                  type="button"
+                  className={
+                    view === "active" && selectedProjects.includes(project.id)
+                      ? "nav-item active"
+                      : "nav-item"
+                  }
+                  onClick={(event) => {
+                    setView("active");
+                    changeSelection(
+                      event.ctrlKey || event.metaKey
+                        ? toggleId(selectedProjects, project.id)
+                        : [project.id],
+                    );
+                  }}
+                >
+                  <span className="project-dot" />
+                  {project.name}
+                  <span>
+                    {
+                      active.filter((task) => task.projectId === project.id)
+                        .length
+                    }
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="edit-project"
+                  aria-label={`Edit ${project.name}`}
+                  onClick={() => setProjectDialog({ project })}
+                >
+                  <Pencil size={13} />
+                </button>
+              </div>
+            ))}
+          </aside>
+          <section className="task-pane">
+            <div className="pane-heading">
+              <div>
+                <span className="eyebrow">
+                  {view === "archive"
+                    ? "Completed work"
+                    : view === "deleted"
+                      ? "Removed work"
+                      : view === "search"
+                        ? "Search results"
+                        : selectedProjects.length === data.projects.length
+                          ? "Your ordered stack"
+                          : selectedProjects.length === 0
+                            ? "No projects selected"
+                            : selectedProjects.length === 1
+                              ? data.projects.find(
+                                  (project) =>
+                                    project.id === selectedProjects[0],
+                                )?.name
+                              : `${selectedProjects.length} projects`}
+                </span>
+                <h1>
+                  {view === "archive"
+                    ? "Archive"
+                    : view === "deleted"
+                      ? "Deleted"
+                      : view === "search"
+                        ? `Results for “${query}”`
+                        : "What’s next"}
+                </h1>
+              </div>
+              <span className="count">{visibleTasks.length}</span>
+            </div>
+            <TaskList
+              tasks={visibleTasks}
+              selectedId={selected?.id ?? null}
+              projects={data.projects}
+              draggable={!closing && view !== "search"}
+              canReorder={!closing && view === "active"}
+              dragged={dragged}
+              onSelect={(task) => setSelectedId(task.id)}
+              onReorder={reorder}
+              onDragStart={setDragged}
+              onDragEnd={endDrag}
+            />
+          </section>
+          <section className="detail-pane">
+            {selected ? (
+              <TaskEditor
+                key={selected.id}
+                task={selected}
+                projects={data.projects}
+                status={statusOf(selected)}
+                coordinator={coordinator}
+                titleRef={titleRef}
+              />
+            ) : (
+              <div className="empty-detail">
+                <Check size={28} />
+                <h2>Nothing selected</h2>
+                <p>Create a task or choose one from the stack.</p>
+              </div>
+            )}
+          </section>
+        </div>
+        {error && (
+          <div className="toast" role="alert">
+            {error}
+            {retryTaskId && (
+              <button
+                type="button"
+                onClick={() => {
+                  const id = retryTaskId;
+                  void coordinator.flush(id).then((outcome) => {
+                    if (outcome.ok) {
+                      setError(null);
+                      setRetryTaskId(null);
+                    } else setError(`Not saved: ${outcome.error.message}`);
+                  });
                 }}
               >
-                <span className="project-dot" />
-                {project.name}
-                <span>
-                  {
-                    active.filter((task) => task.projectId === project.id)
-                      .length
-                  }
-                </span>
+                Retry
+              </button>
+            )}
+            <button type="button" onClick={() => setError(null)}>
+              <X size={16} />
+            </button>
+          </div>
+        )}
+        {newTaskOpen && (
+          <NewTaskDialog
+            projects={data.projects}
+            initialProject={
+              data.projects.find((project) =>
+                selectedProjects.includes(project.id),
+              )?.id ?? data.projects[0]?.id
+            }
+            onCreate={createTask}
+            onClose={() => setNewTaskOpen(false)}
+          />
+        )}
+        {projectDialog && (
+          <ProjectDialog
+            project={projectDialog.project}
+            onSave={(input) => saveProject(input, projectDialog.project)}
+            onClose={() => setProjectDialog(null)}
+          />
+        )}
+        {closeFailure && (
+          <Dialog
+            title="Changes could not be saved"
+            onClose={() => setCloseFailure(null)}
+          >
+            <p>{closeFailure}</p>
+            <div className="dialog-actions close-actions">
+              <button
+                type="button"
+                className="primary"
+                onClick={() => {
+                  setCloseFailure(null);
+                  void window.taskcascadeBeforeClose?.().catch(showError);
+                }}
+              >
+                Retry and close
               </button>
               <button
                 type="button"
-                className="edit-project"
-                aria-label={`Edit ${project.name}`}
-                onClick={() => setProjectDialog({ project })}
+                className="secondary danger"
+                onClick={() => {
+                  coordinator.freeze();
+                  changeClosing(true);
+                  coordinator.discardAll();
+                  void reportClose("discarded").catch((reason) => {
+                    coordinator.unfreeze();
+                    changeClosing(false);
+                    showError(reason);
+                  });
+                }}
               >
-                <Pencil size={13} />
+                Close and discard unsaved changes
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setCloseFailure(null)}
+              >
+                Keep editing
               </button>
             </div>
-          ))}
-        </aside>
-        <section className="task-pane">
-          <div className="pane-heading">
-            <div>
-              <span className="eyebrow">
-                {view === "archive"
-                  ? "Completed work"
-                  : view === "deleted"
-                    ? "Removed work"
-                    : view === "search"
-                      ? "Search results"
-                      : selectedProjects.length === data.projects.length
-                        ? "Your ordered stack"
-                        : selectedProjects.length === 0
-                          ? "No projects selected"
-                          : selectedProjects.length === 1
-                            ? data.projects.find(
-                                (project) => project.id === selectedProjects[0],
-                              )?.name
-                            : `${selectedProjects.length} projects`}
-              </span>
-              <h1>
-                {view === "archive"
-                  ? "Archive"
-                  : view === "deleted"
-                    ? "Deleted"
-                    : view === "search"
-                      ? `Results for “${query}”`
-                      : "What’s next"}
-              </h1>
-            </div>
-            <span className="count">{visibleTasks.length}</span>
-          </div>
-          <TaskList
-            tasks={visibleTasks}
-            selectedId={selected?.id ?? null}
-            projects={data.projects}
-            draggable={view !== "search"}
-            canReorder={view === "active"}
-            dragged={dragged}
-            onSelect={(task) => setSelectedId(task.id)}
-            onReorder={reorder}
-            onDragStart={setDragged}
-            onDragEnd={endDrag}
-          />
-        </section>
-        <section className="detail-pane">
-          {selected ? (
-            <TaskEditor
-              key={selected.id}
-              task={selected}
-              projects={data.projects}
-              status={statusOf(selected)}
-              onUpdate={updateTask}
-              titleRef={titleRef}
-            />
-          ) : (
-            <div className="empty-detail">
-              <Check size={28} />
-              <h2>Nothing selected</h2>
-              <p>Create a task or choose one from the stack.</p>
-            </div>
-          )}
-        </section>
-      </div>
-      {error && (
-        <div className="toast" role="alert">
-          {error}
-          <button type="button" onClick={() => setError(null)}>
-            <X size={16} />
-          </button>
-        </div>
+          </Dialog>
+        )}
+      </main>
+      {closing && (
+        <output className="closing-overlay">Saving before close…</output>
       )}
-      {newTaskOpen && (
-        <NewTaskDialog
-          projects={data.projects}
-          initialProject={
-            data.projects.find((project) =>
-              selectedProjects.includes(project.id),
-            )?.id ?? data.projects[0]?.id
-          }
-          onCreate={createTask}
-          onClose={() => setNewTaskOpen(false)}
-        />
-      )}
-      {projectDialog && (
-        <ProjectDialog
-          project={projectDialog.project}
-          onSave={(input) => saveProject(input, projectDialog.project)}
-          onClose={() => setProjectDialog(null)}
-        />
-      )}
-    </main>
+    </>
   );
 }
 
@@ -724,26 +927,40 @@ function TaskEditor({
   task,
   projects,
   status,
-  onUpdate,
+  coordinator,
   titleRef,
 }: {
   task: Task;
   projects: Project[];
   status: TaskStatus;
-  onUpdate: (task: Task) => void;
+  coordinator: SaveCoordinator;
   titleRef: RefObject<HTMLInputElement | null>;
 }) {
-  const [draft, setDraft] = useState(task);
+  const lastEdited = useRef(coordinator.draft(task.id));
+  const draft = shownFields(
+    coordinator.draft(task.id),
+    lastEdited.current,
+    fieldsOf(task),
+  );
   const [tab, setTab] = useState<EditorTab>("description");
   const [preview, setPreview] = useState(false);
-  const saveTimer = useRef<number | undefined>(undefined);
-  function change(patch: Partial<Task>) {
-    const next = { ...draft, ...patch };
-    setDraft(next);
-    window.clearTimeout(saveTimer.current);
-    saveTimer.current = window.setTimeout(() => onUpdate(next), 450);
+  function change(patch: Partial<Fields>) {
+    const fields = {
+      ...shownFields(
+        coordinator.draft(task.id),
+        lastEdited.current,
+        fieldsOf(task),
+      ),
+      ...patch,
+    };
+    if (coordinator.edit(task.id, fields)) lastEdited.current = fields;
   }
-  useEffect(() => () => window.clearTimeout(saveTimer.current), []);
+  useEffect(
+    () => () => {
+      void coordinator.flush(task.id);
+    },
+    [coordinator, task.id],
+  );
   const content = tab === "description" ? draft.description : draft.scratchpad;
   return (
     <div className="editor">
@@ -771,6 +988,7 @@ function TaskEditor({
             ref={titleRef}
             className="title-input"
             value={draft.title}
+            readOnly={coordinator.frozen()}
             onChange={(event) => change({ title: event.target.value })}
             aria-label="Task title"
           />
@@ -778,6 +996,7 @@ function TaskEditor({
             Project
             <select
               value={draft.projectId}
+              disabled={coordinator.frozen()}
               onChange={(event) => change({ projectId: event.target.value })}
             >
               {projects.map((project) => (
@@ -816,6 +1035,7 @@ function TaskEditor({
           ) : (
             <textarea
               value={content}
+              readOnly={coordinator.frozen()}
               onChange={(event) =>
                 change(
                   tab === "description"
@@ -830,11 +1050,36 @@ function TaskEditor({
               }
             />
           )}
-          <p className="autosave">Saved automatically · Markdown supported</p>
+          <p
+            className={`autosave${coordinator.status(task.id) === "failed" ? " save-failed" : ""}`}
+          >
+            {coordinator.status(task.id) === "failed" ? (
+              <>
+                Not saved: {coordinator.error(task.id)?.message} ·{" "}
+                <button
+                  type="button"
+                  onClick={() => {
+                    void coordinator.flush(task.id);
+                  }}
+                >
+                  Retry
+                </button>
+              </>
+            ) : coordinator.status(task.id) === "clean" ? (
+              "Saved automatically · Markdown supported"
+            ) : (
+              "Saving…"
+            )}
+          </p>
         </>
       )}
     </div>
   );
+}
+
+function fieldsOf(task: Task): Fields {
+  const { title, projectId, description, scratchpad } = task;
+  return { title, projectId, description, scratchpad };
 }
 
 function ReadOnlySection({ title, value }: { title: string; value: string }) {

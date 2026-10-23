@@ -12,6 +12,9 @@
   --accent-link: #4d8bff;
   --up: #16c784;
   --up-soft: rgba(22, 199, 132, 0.13);
+  --danger-surface: #3c1d21;
+  --danger-border: #6c3038;
+  --danger-text: #ffd8d8;
   --radius: 14px;
   font-family: Inter, system-ui, sans-serif;
   color: var(--text-primary);
@@ -612,9 +615,9 @@ select:focus-visible {
   right: 20px;
   bottom: 20px;
   max-width: 400px;
-  background: #3c1d21;
-  border: 1px solid #6c3038;
-  color: #ffd8d8;
+  background: var(--danger-surface);
+  border: 1px solid var(--danger-border);
+  color: var(--danger-text);
   border-radius: 9px;
   padding: 10px 10px 10px 14px;
   font-size: 13px;
@@ -629,6 +632,32 @@ select:focus-visible {
   color: inherit;
   display: grid;
   padding: 0;
+}
+.save-failed,
+.danger {
+  color: var(--danger-text);
+}
+.autosave button {
+  color: inherit;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  text-decoration: underline;
+}
+.close-actions {
+  flex-wrap: wrap;
+}
+.closing-overlay {
+  position: fixed;
+  left: 20px;
+  bottom: 20px;
+  z-index: 6;
+  background: var(--surface-1);
+  border: 1px solid var(--hairline);
+  border-radius: 9px;
+  padding: 12px 16px;
+  color: var(--text-secondary);
+  font-size: 13px;
 }
 @media (max-width: 1050px) {
   .workspace {

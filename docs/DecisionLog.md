@@ -56,3 +56,9 @@ undelete. No purge mechanism — the trash only grows until a future decision.
 This softens the earlier "archive is immutable" stance: archived tasks can
 now be moved to the trash. Spec:
 `docs/superpowers/specs/2026-07-13-drag-drop-archive-trash-design.md`.
+
+## 2026-10-23 — Closing the desktop window never loses an edit
+
+Decision: Closing the desktop window never discards an unsaved edit unless the user explicitly picks "Close and discard unsaved changes". Edits save after a short debounce; complete, delete and drag actions on an active task wait for a confirmed save; closing runs a save-and-confirm handshake with the shell and keeps the window open, with Retry, when a save fails.
+Context: The desktop window can close at any moment (X, Alt+F4, taskbar), and a pending edit used to live only in the editor's local state.
+Consequences: Once closing is decided, the shell stops accepting API calls (503) and drains in-flight requests, all inside the single 5-second shutdown deadline. If the page cannot answer, a native Yes/No question decides. Plan: `docs/Plans/Plan.desktop-window.md` Phase 7.
