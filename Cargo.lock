@@ -3915,8 +3915,10 @@ name = "taskcascade-desktop"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "chrono",
  "http",
  "rust-embed",
+ "same-file",
  "serde_json",
  "taskcascade-backend",
  "tauri",
@@ -3924,6 +3926,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "tower",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -16,6 +16,11 @@ tokio = { version = "1", features = ["rt-multi-thread", "time", "sync"] }
 tower = { version = "0.5", features = ["util"] }
 rust-embed = { version = "8", features = ["mime-guess"] }
 taskcascade-backend = { path = "../backend" }
+same-file = "1"
+chrono = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 
 [build-dependencies]
 tauri-build = "2"

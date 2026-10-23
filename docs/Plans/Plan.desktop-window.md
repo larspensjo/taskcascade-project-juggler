@@ -1018,8 +1018,13 @@ log path, and distinguishes "could not start" from "stopped unexpectedly".
   `SHUTDOWN_DEADLINE`. The report has `pool_closed` and no `exhausted_at`. The
   file can be renamed, and reopening it shows the task.
 - **Held connection.** Hold a connection from `acquire_for_tests()` and shut
-  down with a 500 ms deadline. It returns in under about 700 ms with
+  down with a 600 ms deadline, exercising the pool-close timeout after the
+  500 ms runtime reserve. It returns in under about 700 ms with
   `pool_closed == false` and `exhausted_at == Some("pool close")`.
+- **Budget exhausted before pool close starts.** With a 500 ms deadline, the
+  500 ms runtime reserve leaves no pool-close budget. Shutdown skips `close()`
+  and reports `pool_closed == false` and `exhausted_at == Some("pool close")`;
+  a new connection can still be acquired.
 - **Idempotent.** A second `shutdown` returns at once with the same report.
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1055,8 +1060,11 @@ one private function. `connect(url)` stays for in-memory tests.
   TaskCascade once with TASKCASCADE_CREATE_DATABASE=1 (scripts\install.ps1 -InitDatabase).
   ```
 
-- **Startup failures.** A setup error returns from `build()` as an error.
-  `run` logs it, shows `failure_message` via `MessageBoxW` and exits 1.
+- **Startup failures.** Tauri 2.12.5 runs setup inside `run_return` and panics
+  on a setup `Err`, so capture setup errors in a shared slot and request exit.
+  After `run_return`, `run` reports them as "could not start", logs them,
+  shows `failure_message` via `MessageBoxW` and exits 1. Startup is marked
+  successful only after setup succeeds.
   Install a panic hook that records the message, wrap the run in
   `catch_unwind`, and report a panic the same way (TTTB's `PanicReport`).
 - **Bounded shutdown.** Both the `RunEvent::Exit` handler and the code after

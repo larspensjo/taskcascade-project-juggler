@@ -175,14 +175,58 @@ pub mod test_support {
 #[derive(Clone)]
 pub struct AppState(Arc<SqlitePool>);
 
+pub enum OpenMode {
+    ExistingOnly,
+    CreateIfMissing,
+}
+
+#[derive(Debug)]
+pub enum OpenError {
+    Missing(std::path::PathBuf),
+    Database(sqlx::Error),
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing(path) => write!(f, "No task database at {}.", path.display()),
+            Self::Database(error) => write!(f, "Could not open task database: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for OpenError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Database(error) => Some(error),
+            Self::Missing(_) => None,
+        }
+    }
+}
+
 impl AppState {
+    pub async fn open(database: &std::path::Path, mode: OpenMode) -> Result<Self, OpenError> {
+        if matches!(mode, OpenMode::ExistingOnly) && !database.is_file() {
+            return Err(OpenError::Missing(database.to_owned()));
+        }
+        Self::connect_with(
+            SqliteConnectOptions::new()
+                .filename(database)
+                .create_if_missing(matches!(mode, OpenMode::CreateIfMissing)),
+        )
+        .await
+        .map_err(OpenError::Database)
+    }
+
     pub async fn connect(database_url: &str) -> Result<Self, sqlx::Error> {
-        let options = SqliteConnectOptions::from_str(database_url)?
-            .create_if_missing(true)
-            .foreign_keys(true);
+        Self::connect_with(SqliteConnectOptions::from_str(database_url)?.create_if_missing(true))
+            .await
+    }
+
+    async fn connect_with(options: SqliteConnectOptions) -> Result<Self, sqlx::Error> {
         let pool = SqlitePoolOptions::new()
             .max_connections(5)
-            .connect_with(options)
+            .connect_with(options.foreign_keys(true))
             .await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
         let has_projects: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM projects")
@@ -197,6 +241,23 @@ impl AppState {
         }
         assign_missing_colors(&pool).await?;
         Ok(Self(Arc::new(pool)))
+    }
+
+    pub async fn close(&self) {
+        loop {
+            self.0.close().await;
+            if self.0.size() == 0 {
+                break;
+            }
+            // sqlx 0.8 can finish close while a checked-out connection remains.
+            // Wait cooperatively, then close any late returns; callers bound this wait.
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    #[doc(hidden)]
+    pub async fn acquire_for_tests(&self) -> sqlx::pool::PoolConnection<sqlx::Sqlite> {
+        self.0.acquire().await.expect("test pool must be open")
     }
 }
 
