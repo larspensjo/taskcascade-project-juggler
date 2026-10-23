@@ -8,6 +8,7 @@ use std::{
 };
 use taskcascade_backend::app::{AppState, OpenError, OpenMode};
 use tauri::Manager;
+use tauri_plugin_opener::OpenerExt;
 
 use crate::{
     assets::{self, AssetSource, FrontendDist},
@@ -17,6 +18,7 @@ use crate::{
     diagnostics::Diagnostics,
     identity::{self, Identity},
     lifecycle::{Lifecycle, SHUTDOWN_DEADLINE},
+    navigation::{self, NavigationDecision},
     startup_failure::{self, PanicReport},
 };
 use tauri_plugin_window_state::StateFlags;
@@ -179,6 +181,11 @@ fn run_inner(
             },
         ))
         .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
+        .plugin(
             tauri_plugin_window_state::Builder::default()
                 .with_state_flags(StateFlags::all() - StateFlags::VISIBLE)
                 .build(),
@@ -211,6 +218,12 @@ fn run_inner(
                 router
                     .set(compose(connected, FrontendDist))
                     .map_err(|_| "desktop router was already initialized")?;
+                let navigation_app = app.handle().clone();
+                let navigation_runtime = setup_runtime.clone();
+                let navigation_diagnostics = Arc::clone(&setup_diagnostics);
+                let new_window_app = app.handle().clone();
+                let new_window_runtime = setup_runtime.clone();
+                let new_window_diagnostics = Arc::clone(&setup_diagnostics);
                 let window = tauri::WebviewWindowBuilder::new(app, "main", launch_url())
                     .title(identity.title)
                     .inner_size(1280.0, 800.0)
@@ -219,7 +232,31 @@ fn run_inner(
                     // Mirrors frontend/src/styles.css --canvas.
                     .background_color(tauri::utils::config::Color(0x0a, 0x0b, 0x0d, 0xff))
                     .disable_drag_drop_handler()
+                    .devtools(cfg!(debug_assertions))
+                    .on_navigation(move |url| {
+                        allow_navigation(
+                            &navigation_runtime,
+                            &navigation_app,
+                            &navigation_diagnostics,
+                            url,
+                        )
+                    })
+                    .on_new_window(move |url, _features| {
+                        allow_navigation(
+                            &new_window_runtime,
+                            &new_window_app,
+                            &new_window_diagnostics,
+                            &url,
+                        );
+                        tauri::webview::NewWindowResponse::Deny
+                    })
                     .build()?;
+                #[cfg(all(windows, not(debug_assertions)))]
+                if let Err(error) =
+                    crate::webview_settings::apply(&window, Arc::clone(&setup_diagnostics))
+                {
+                    setup_diagnostics.log(&format!("failed to apply WebView2 settings: {error}"));
+                }
                 let show_diagnostics = Arc::clone(&setup_diagnostics);
                 // Setup runs this synchronously on the main thread; build already restored
                 // window state through attach_window's on_window_ready hook.
@@ -265,6 +302,46 @@ fn log_identity(diagnostics: &Diagnostics, identity: Identity) {
         "identity identifier={} title={}",
         identity.identifier, identity.title
     ));
+}
+
+fn allow_navigation(
+    runtime: &tokio::runtime::Handle,
+    app: &tauri::AppHandle,
+    diagnostics: &Arc<Diagnostics>,
+    url: &url::Url,
+) -> bool {
+    match navigation::classify(url) {
+        NavigationDecision::Allow => true,
+        NavigationDecision::OpenExternally => {
+            let app = app.clone();
+            let diagnostics = Arc::clone(diagnostics);
+            let url = url.clone();
+            // tauri-runtime-wry 2.12.3 runs run_on_main_thread inline on the UI thread;
+            // hop through a worker so the open is queued after the navigation callback.
+            runtime.spawn(async move {
+                let opener_app = app.clone();
+                let opener_diagnostics = Arc::clone(&diagnostics);
+                if let Err(error) = app.run_on_main_thread(move || {
+                    if let Err(error) = opener_app.opener().open_url(url.as_str(), None::<&str>) {
+                        opener_diagnostics.log(&format!(
+                            "failed to open external navigation {}: {error}",
+                            navigation::url_for_log(url.as_str()),
+                        ));
+                    }
+                }) {
+                    diagnostics.log(&format!("failed to schedule external navigation: {error}"));
+                }
+            });
+            false
+        }
+        NavigationDecision::Block => {
+            diagnostics.log(&format!(
+                "blocked navigation {}",
+                navigation::url_for_log(url.as_str()),
+            ));
+            false
+        }
+    }
 }
 
 enum SetupOutcome {

@@ -7,4 +7,7 @@ pub mod diagnostics;
 pub mod identity;
 pub mod launch;
 pub mod lifecycle;
+pub mod navigation;
 pub mod startup_failure;
+#[cfg(all(windows, not(debug_assertions)))]
+mod webview_settings;

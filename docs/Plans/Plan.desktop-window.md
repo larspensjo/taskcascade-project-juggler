@@ -108,8 +108,11 @@ entries plus updates to `docs/Design.HighLevel.md`,
       `cargo fmt --all`;
     - any change to `desktop/` or a workspace manifest: `cargo test --workspace`,
       `cargo clippy --workspace --all-targets -- -D warnings`,
-      `cargo fmt --all`. The desktop crate links WebView2 and builds slowly,
-      which is why the per-package form stays the backend default.
+      `cargo fmt --all`, and
+      `cargo clippy -p taskcascade-desktop --release --all-targets -- -D warnings`.
+      Build `frontend/dist` first with `npm run build` from `frontend/`;
+      `build.rs` panics in release without it. The desktop crate links WebView2
+      and builds slowly, which is why the per-package form stays the backend default.
   - Frontend, from `frontend/`: `npm run check` and `npm run fmt`, plus
     `npm test` once Phase 7 adds it. Phase 10 records `npm test` in
     `Agents.md`, as Lars decided.
@@ -1276,8 +1279,10 @@ Otherwise use `with_webview` and `webview2-com` (`ICoreWebView2Settings3`,
 
 - [ ] **Step 5: Run the gate**
 
+Run `npm run build` from `frontend/` first; release `build.rs` requires
+`frontend/dist`.
 Run (from the repository root):
-`cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --all`
+`cargo test --workspace && cargo clippy --workspace --all-targets -- -D warnings && cargo fmt --all && cargo clippy -p taskcascade-desktop --release --all-targets -- -D warnings`
 Expected: PASS.
 
 - [ ] **Step 6: Human verification (recommended; scratch data only)**
@@ -1320,6 +1325,10 @@ In Preview:
 - Right-clicking selected text in a Preview shows copy.
 - Right-clicking anywhere else shows no menu.
 - Drag-and-drop to Archive, Deleted and All tasks still works.
+
+If F5/Ctrl+F/Ctrl+P still work on the first page but not after navigation,
+the fallback is to reload the root once after applying the settings
+(reload is allowed by `classify`).
 
 - [ ] **Step 7: Commit**
 
@@ -1977,6 +1986,8 @@ Add two bullets:
 
 - [ ] **Step 3: `docs/Design.HighLevel.md`**
 
+- If a Tauri capability file is ever added, it must not grant opener permissions
+  (e.g. `opener:default`), which would give page script a URL-opening command.
 - **Architecture table:**
   - **Desktop shell:** Rust + Tauri 2 (WebView2), responsible for the window,
     the scheme bridge, frontend assets, the data location, single instance,
@@ -2071,7 +2082,7 @@ Consequences: Updating the daily app means re-running the install script with Ta
 
 ## YYYY-MM-DD — Inside the window: links leave, and edits are confirmed before they can be lost
 
-Decision: The window only ever shows TaskCascade. Navigation is decided in the shell: `http`, `https` and `mailto` links open in the system's handlers, and every other target — relative links, `file:`, `javascript:`, other schemes and new-window requests — is blocked. Remote images in notes render only over https. Release builds turn off WebView2's browser accelerator keys and show the default context menu only on editable text and selections; devtools exist only in debug builds. Task drafts are owned by a save coordinator that writes one request per task at a time, keeps a failed draft with its error and a Retry, and lets completing, deleting and closing proceed only after the latest draft is confirmed saved. Closing freezes editing, asks the page to confirm its saves, keeps the window open if a save fails, and then shuts down within one bounded deadline. The single deliberate exception to "no lost edits" is the user explicitly choosing "close and discard unsaved changes" after a failed save, so a persistent failure can never trap the user in the window.
+Decision: The window only ever shows TaskCascade. Navigation is decided in the shell: `http`, `https` and `mailto` links open in the system's handlers, and every other target — relative links, `file:`, `javascript:` and other schemes — is blocked. The new window is always denied, while an `http`, `https` or `mailto` target still opens in the system handler. Remote images in notes render only over https. Release builds turn off WebView2's browser accelerator keys and show the default context menu only on editable text and selections; devtools exist only in debug builds. Task drafts are owned by a save coordinator that writes one request per task at a time, keeps a failed draft with its error and a Retry, and lets completing, deleting and closing proceed only after the latest draft is confirmed saved. Closing freezes editing, asks the page to confirm its saves, keeps the window open if a save fails, and then shuts down within one bounded deadline. The single deliberate exception to "no lost edits" is the user explicitly choosing "close and discard unsaved changes" after a failed save, so a persistent failure can never trap the user in the window.
 Context: In a browser, the browser's own chrome handled links, reloads and closing; in a bare window, a followed link would replace the app, and a close or lifecycle action within the save delay — or after a rejected save such as a blank title — would silently lose the latest text. Treating "the request finished" as "the edit is saved" was rejected because it acknowledged lost edits.
 Consequences: The frontend's contract with the shell is one global close hook plus two close-report routes; changing how the shell closes means keeping them. If no live page answers within a few seconds the window closes, because nothing could save from a page that never responds; a page that answered but never reports asks the user before closing. Plain-http images in notes no longer render. Ending the process abruptly (task kill, Ctrl+C in a development console, operating-system shutdown) can still lose an edit younger than the save delay; committed data is unaffected.
 ```
