@@ -39,7 +39,11 @@ function Resolve-CanonicalPath([string]$Path) {
 function Initialize-RehearsalRoot([string]$Path) {
     $absolute = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path).TrimEnd('\', '/')
     $protected = @(Join-Path $repoRoot '.local/data')
-    if ($env:LOCALAPPDATA) { $protected += Join-Path $env:LOCALAPPDATA 'TaskCascade' }
+    if ($env:LOCALAPPDATA) {
+        $protected += Join-Path $env:LOCALAPPDATA 'TaskCascade'
+        $protected += Join-Path $env:LOCALAPPDATA 'Programs/TaskCascade'
+    }
+    $protected += [Environment]::GetFolderPath('Programs')
     # Check spelling before resolving aliases, then check filesystem targets too.
     foreach ($candidate in @($absolute, (Resolve-CanonicalPath $absolute))) {
         foreach ($location in $protected) {
