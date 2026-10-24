@@ -281,16 +281,15 @@ Avoid features such as:
 
 ## Technology
 
-Frontend:
+Application:
 
-- Rust
-- Web
+- Desktop window (Rust, Tauri 2 on WebView2) with a web-technology interface (React, TypeScript)
 
-Backend:
+Storage:
 
-- Local storage only
+- Local storage only (one SQLite file in the user's local application data)
 
-No server required.
+No server, network port, hosting or account required.
 
 ---
 

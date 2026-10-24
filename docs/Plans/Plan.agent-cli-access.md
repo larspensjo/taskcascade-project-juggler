@@ -1,5 +1,7 @@
 # Agent Access to TaskCascade (CLI Subcommands) — Implementation Plan
 
+**Parked (DecisionLog 2026-10-24, desktop application):** TaskCascade is now a desktop app that opens no port, so this plan's loopback client cannot reach it; the plan is parked, and any CLI would need a separate console binary because the desktop executable is a GUI-subsystem program.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan phase-by-phase. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** AI coding agents working in any repository on this machine can search
