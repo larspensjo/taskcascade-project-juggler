@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "vitest run",
     "check": "tsc --noEmit && biome check src index.html vite.config.ts vitest.config.ts biome.json package.json tsconfig.json",

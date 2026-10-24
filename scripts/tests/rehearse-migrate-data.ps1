@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 $ownedRoot = Initialize-RehearsalRoot $Root
 $migrate = Join-Path $repoRoot 'scripts/migrate-data.ps1'
 
-function Get-RealDataMetadata {
+function Get-ProtectedDataMetadata {
     # Metadata only: never hash, copy, summarize, or open these files.
     $directories = @(Join-Path $repoRoot '.local/data')
     if ($env:LOCALAPPDATA) { $directories += Join-Path $env:LOCALAPPDATA 'TaskCascade' }
@@ -28,7 +28,7 @@ function Get-DatabaseHashes([string]$Directory) {
 }
 
 try {
-    $realBefore = Get-RealDataMetadata
+    $realBefore = Get-ProtectedDataMetadata
     if (Get-Process -Name 'taskcascade-backend', 'taskcascade-desktop' -ErrorAction SilentlyContinue) {
         throw 'Migration rehearsal requires every TaskCascade backend and desktop process to be closed, including the daily app. Close the running TaskCascade backend or desktop app, then re-run.'
     }
@@ -181,7 +181,7 @@ try {
         if ($shortPath.ToString() -eq $protected) { Write-Host '8.3 aliases are disabled on this volume; canonical guard checked with the long path.' }
     }
     Invoke-Case '8 real-data paths untouched (metadata only)' {
-        Assert-That ((Get-RealDataMetadata) -eq $realBefore) 'Real-data metadata changed.'
+        Assert-That ((Get-ProtectedDataMetadata) -eq $realBefore) 'Real-data metadata changed.'
     }
 }
 finally { Remove-RehearsalRoot $ownedRoot }

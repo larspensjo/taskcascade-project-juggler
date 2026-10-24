@@ -163,4 +163,4 @@ if ($defaultPaths) {
     }
 }
 Write-Host 'instances\ was not touched.'
-Write-Host 'Next: .\scripts\start.ps1 -CreateRealDataSnapshot'
+Write-Host 'Next: .\scripts\install.ps1'

@@ -57,7 +57,7 @@ mod tests {
         for url in [
             "http://taskcascade.localhost/notes.md",
             "http://taskcascade.localhost/?x",
-            "http://taskcascade.localhost:8080/",
+            "http://taskcascade.localhost:9000/",
             "http://u@taskcascade.localhost/",
             "https://taskcascade.localhost/",
             "http://taskcascade.localhost/#frag",
