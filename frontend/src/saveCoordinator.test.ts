@@ -314,3 +314,31 @@ describe("save coordinator", () => {
     expect(action).toHaveBeenCalledOnce();
   });
 });
+
+describe("save coordinator with the global timers", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("calls setTimeout and clearTimeout unbound, as browsers require", async () => {
+    // Browsers throw "Illegal invocation" when the timer functions get another `this`.
+    const realSet = globalThis.setTimeout;
+    const realClear = globalThis.clearTimeout;
+    function strict<T extends (...args: never[]) => unknown>(real: T) {
+      return function (this: unknown, ...args: Parameters<T>) {
+        if (this !== undefined && this !== globalThis)
+          throw new TypeError("Illegal invocation");
+        return real(...args);
+      };
+    }
+    vi.stubGlobal("setTimeout", strict(realSet));
+    vi.stubGlobal("clearTimeout", strict(realClear));
+    const send = vi.fn(async (_id: string, input: Fields) => task(input));
+    const c = createSaveCoordinator({ send, onSaved: vi.fn(), delayMs: 0 });
+    expect(c.edit("a", fields)).toBe(true);
+    expect(c.edit("a", { ...fields, title: "B" })).toBe(true);
+    expect(await c.flush("a")).toEqual({ ok: true });
+    expect(send).toHaveBeenCalledExactlyOnceWith("a", {
+      ...fields,
+      title: "B",
+    });
+  });
+});

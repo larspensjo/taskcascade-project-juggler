@@ -64,7 +64,11 @@ export function createSaveCoordinator(options: {
 }): SaveCoordinator {
   const entries = new Map<string, Entry>();
   const listeners = new Set<() => void>();
-  const timers = options.timers ?? { set: setTimeout, clear: clearTimeout };
+  // Wrapped so the browser's timers are never invoked with this object as `this`.
+  const timers = options.timers ?? {
+    set: (handler, delay) => setTimeout(handler, delay),
+    clear: (timer) => clearTimeout(timer),
+  };
   let frozen = false;
   let version = 0;
   function notify() {
