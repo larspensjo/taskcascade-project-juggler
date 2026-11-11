@@ -40,6 +40,7 @@ import {
   shownFields,
 } from "./saveCoordinator";
 import { registerBeforeClose } from "./shell";
+import { createSubmitOnce } from "./submitOnce";
 
 type View = "active" | "archive" | "search" | "deleted";
 type TaskStatus = "active" | "archived" | "deleted";
@@ -368,8 +369,8 @@ export function App() {
     title: string;
     projectId: string;
     description?: string;
-  }) {
-    if (coordinator.frozen()) return;
+  }): Promise<boolean> {
+    if (coordinator.frozen()) return false;
     try {
       const task = await api.createTask(input);
       setData(
@@ -382,8 +383,10 @@ export function App() {
       setView("active");
       setSelectedId(task.id);
       setNewTaskOpen(false);
+      return true;
     } catch (reason) {
       showError(reason);
+      return false;
     }
   }
   async function savedAction<T>(
@@ -1113,19 +1116,32 @@ function NewTaskDialog({
     title: string;
     projectId: string;
     description?: string;
-  }) => void;
+  }) => Promise<boolean>;
   onClose: () => void;
 }) {
   const [title, setTitle] = useState("");
   const [projectId, setProjectId] = useState(initialProject ?? "");
   const [description, setDescription] = useState("");
-  function submit(event: FormEvent) {
+  const [submitting, setSubmitting] = useState(false);
+  const [submitOnce] = useState(createSubmitOnce);
+  async function submit(event: FormEvent) {
     event.preventDefault();
-    if (title.trim() && projectId) onCreate({ title, projectId, description });
+    if (!title.trim() || !projectId) return;
+    setSubmitting(true);
+    try {
+      if (
+        !(await submitOnce(() =>
+          onCreate({ title: title.trim(), projectId, description }),
+        ))
+      )
+        setSubmitting(false);
+    } catch {
+      setSubmitting(false);
+    }
   }
   return (
     <Dialog title="New task" onClose={onClose}>
-      <form onSubmit={submit}>
+      <form onSubmit={submit} aria-busy={submitting}>
         <label>
           Title
           <input
@@ -1162,9 +1178,9 @@ function NewTaskDialog({
           <button
             type="submit"
             className="primary"
-            disabled={!title.trim() || !projectId}
+            disabled={!title.trim() || !projectId || submitting}
           >
-            Create task
+            {submitting ? "Creating…" : "Create task"}
           </button>
         </div>
       </form>
