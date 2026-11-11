@@ -40,9 +40,10 @@ import {
   shownFields,
 } from "./saveCoordinator";
 import { registerBeforeClose } from "./shell";
+import { shortcutFor } from "./shortcuts";
 import { createSubmitOnce } from "./submitOnce";
 
-type View = "active" | "archive" | "search" | "deleted";
+export type View = "active" | "archive" | "search" | "deleted";
 type TaskStatus = "active" | "archived" | "deleted";
 type DropTarget = "stack" | "archive" | "trash";
 type EditorTab = "description" | "scratchpad";
@@ -125,6 +126,8 @@ export function App() {
     }
   }, [closing]);
   const [closeFailure, setCloseFailure] = useState<string | null>(null);
+  const dialogOpen =
+    newTaskOpen || projectDialog !== null || closeFailure !== null;
   const closeRunning = useRef<Promise<CloseResult> | null>(null);
   const coordinatorRef = useRef<SaveCoordinator | null>(null);
   if (!coordinatorRef.current) {
@@ -265,55 +268,41 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (coordinator.frozen()) return;
-      if (event.ctrlKey && event.key.toLowerCase() === "n") {
-        event.preventDefault();
-        setNewTaskOpen(true);
-      }
-      if (event.ctrlKey && event.key.toLowerCase() === "f") {
-        event.preventDefault();
-        searchRef.current?.focus();
-      }
-      if (event.key === "Escape") {
-        setNewTaskOpen(false);
-        setProjectDialog(null);
+      const shortcut = shortcutFor(
+        {
+          key: event.key,
+          ctrlKey: event.ctrlKey,
+          onEditableField: isEditingTarget(event.target),
+        },
+        {
+          frozen: coordinator.frozen(),
+          dialogOpen,
+          hasSelection: Boolean(selected),
+          view,
+        },
+      );
+      if (!shortcut) return;
+      if (shortcut === "clear-search") {
         setQuery("");
         if (query) setView("active");
+        return;
       }
-      if (
-        event.key === "Enter" &&
-        !isEditingTarget(event.target) &&
-        selected &&
-        view !== "archive" &&
-        view !== "deleted"
-      ) {
-        event.preventDefault();
-        titleRef.current?.focus();
-      }
-      if (
-        event.key === "Delete" &&
-        !isEditingTarget(event.target) &&
-        selected &&
-        view === "active"
-      ) {
-        event.preventDefault();
-        complete(selected);
-      }
-      if (
-        event.ctrlKey &&
-        (event.key === "ArrowUp" || event.key === "ArrowDown") &&
-        selected &&
-        view === "active"
-      ) {
-        event.preventDefault();
+      event.preventDefault();
+      if (shortcut === "new-task") setNewTaskOpen(true);
+      if (shortcut === "focus-search") searchRef.current?.focus();
+      if (!selected) return;
+      if (shortcut === "edit-title") titleRef.current?.focus();
+      if (shortcut === "complete") complete(selected);
+      if (shortcut === "move-up" || shortcut === "move-down") {
+        const down = shortcut === "move-down";
         const index = visibleTasks.findIndex((task) => task.id === selected.id);
-        const target = visibleTasks[index + (event.key === "ArrowUp" ? -1 : 1)];
-        if (target) reorder(selected, target, event.key === "ArrowDown");
+        const target = visibleTasks[index + (down ? 1 : -1)];
+        if (target) reorder(selected, target, down);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [coordinator, query, selected, view, visibleTasks]);
+  }, [coordinator, dialogOpen, query, selected, view, visibleTasks]);
 
   async function changeSelection(next: string[]) {
     if (coordinator.frozen()) return;
@@ -1261,6 +1250,15 @@ function Dialog({
   children,
   onClose,
 }: { title: string; children: React.ReactNode; onClose: () => void }) {
+  // While a dialog is open the window-wide shortcuts stand aside (see
+  // shortcutFor), so the dialog handles its own Escape.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
   return (
     <div className="dialog-backdrop" onMouseDown={onClose}>
       <dialog
