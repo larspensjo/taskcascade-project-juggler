@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   type ExportInput,
   type ExportTask,
+  embedMarkdown,
   formatTasksMarkdown,
 } from "./exportMarkdown";
 
@@ -189,5 +190,71 @@ describe("formatTasksMarkdown", () => {
     });
     expect(text).toContain("Completed 2026-11-20");
     expect(text).toContain("Completed invalid");
+  });
+});
+
+describe("embedMarkdown", () => {
+  it.each([
+    [
+      "# A\n## B\n### C\n#### D\n###### E\n#\n   # F",
+      "#### A\n##### B\n###### C\n###### D\n###### E\n####\n   #### F",
+    ],
+    [
+      "#hashtag\r\n    # indented code\r\t# x\n\\#escaped",
+      "#hashtag\n    # indented code\n\t# x\n\\#escaped",
+    ],
+    [
+      "- # Item heading\n10. item\n    # Sub\n- item\n      # code",
+      "- #### Item heading\n10. item\n    #### Sub\n- item\n      # code",
+    ],
+    [
+      "-\t# Tabbed\n\t## Sub\n  - - # Nested",
+      "-\t#### Tabbed\n\t##### Sub\n  - - #### Nested",
+    ],
+    [
+      "```sh\n# comment\n```\n~~~\n# comment\n~~~\n# H",
+      "```sh\n# comment\n```\n~~~\n# comment\n~~~\n#### H",
+    ],
+    [
+      "````\n```\n```` x\n    ````\n# comment\n````` \n# H",
+      "````\n```\n```` x\n    ````\n# comment\n````` \n#### H",
+    ],
+    ["~~~\n```\n# comment\n~~~~\n# H", "~~~\n```\n# comment\n~~~~\n#### H"],
+    ["  ```\nNo indent\n  ```", "  ```\nNo indent\n  ```"],
+    ["```inline```\n# H", "```inline```\n#### H"],
+    ["```\ncode", "```\ncode\n```"],
+    ["~~~~\ncode", "~~~~\ncode\n~~~~"],
+    ["- item\n  ```\n  code", "- item\n  ```\n  code\n  ```"],
+    ["- ```sh\n  code", "- ```sh\n  code\n  ```"],
+    ["- - ```sh\n    code", "- - ```sh\n    code\n    ```"],
+    [
+      "- item\n  ```\n  code\nAfter the list\n# H",
+      "- item\n  ```\n  code\nAfter the list\n#### H",
+    ],
+    [
+      "- item\nlazy text\n  ```\n  code",
+      "- item\nlazy text\n  ```\n  code\n  ```",
+    ],
+    [
+      "- - -\n    ```\n***\n    ~~~\n# H",
+      "- - -\n    ```\n***\n    ~~~\n#### H",
+    ],
+    [
+      "Paragraph\n2. still paragraph\n   ```\nUnindented code",
+      "Paragraph\n2. still paragraph\n   ```\nUnindented code\n   ```",
+    ],
+  ])("embeds %j", (source, expected) => {
+    expect(embedMarkdown(source, 3)).toBe(expected);
+  });
+
+  it("leaves setext and quoted headings at their original levels", () => {
+    const source = "Title\n===\n\n> # Quoted";
+    expect(embedMarkdown(source, 3)).toBe(source);
+  });
+
+  it("treats a fence-like line inside a raw HTML block as a fence", () => {
+    expect(embedMarkdown("<pre>\n```\n</pre>", 3)).toBe(
+      "<pre>\n```\n</pre>\n```",
+    );
   });
 });
