@@ -277,7 +277,29 @@ select:focus-visible {
   font-family: "JetBrains Mono", monospace;
   font-size: 12px;
   color: var(--text-muted);
-  padding-top: 16px;
+}
+.pane-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 8px;
+}
+.icon-button {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+.icon-button:hover:not(:disabled) {
+  border-color: var(--hairline);
+}
+.icon-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 .task-list {
   list-style: none;
@@ -647,7 +669,8 @@ select:focus-visible {
 .close-actions {
   flex-wrap: wrap;
 }
-.closing-overlay {
+.closing-overlay,
+.copy-status:not(:empty) {
   position: fixed;
   left: 20px;
   bottom: 20px;
@@ -658,6 +681,14 @@ select:focus-visible {
   padding: 12px 16px;
   color: var(--text-secondary);
   font-size: 13px;
+}
+.copy-status:not(:empty) {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.copy-status svg {
+  color: var(--up);
 }
 @media (max-width: 1050px) {
   .workspace {

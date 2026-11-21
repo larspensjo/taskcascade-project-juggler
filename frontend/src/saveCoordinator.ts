@@ -7,6 +7,11 @@ export type Fields = Pick<
 export type SaveStatus = "clean" | "pending" | "saving" | "failed";
 export type SaveOutcome = { ok: true } | { ok: false; error: Error };
 
+export function fieldsOf(task: Task): Fields {
+  const { title, projectId, description, scratchpad } = task;
+  return { title, projectId, description, scratchpad };
+}
+
 // Keep the mounted editor's spelling when the server only normalised it.
 // Stored tasks still supply the values everywhere outside the editor.
 export function shownFields(

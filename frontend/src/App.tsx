@@ -1,6 +1,7 @@
 import {
   Archive,
   Check,
+  ClipboardCopy,
   FileText,
   GripVertical,
   Pencil,
@@ -34,14 +35,28 @@ import {
 } from "./api";
 import { type CloseResult, runCloseFlow } from "./closeFlow";
 import {
+  copyAvailability,
+  copyVisibleTasks,
+  systemClipboard,
+  toExportTask,
+} from "./copyMarkdown";
+import {
   type Fields,
   type SaveCoordinator,
   createSaveCoordinator,
+  fieldsOf,
   shownFields,
 } from "./saveCoordinator";
+import {
+  initialSearch,
+  searchResolved,
+  searchSettled,
+  searchStarted,
+} from "./searchState";
 import { registerBeforeClose } from "./shell";
 import { shortcutFor } from "./shortcuts";
 import { createSubmitOnce } from "./submitOnce";
+import { createTransientMessage } from "./transientMessage";
 
 export type View = "active" | "archive" | "search" | "deleted";
 type TaskStatus = "active" | "archived" | "deleted";
@@ -99,13 +114,31 @@ export function App() {
   const [view, setView] = useState<View>("active");
   const [selectedProjects, setSelectedProjects] = useState<string[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [query, setQuery] = useState("");
-  const [results, setResults] = useState<Task[]>([]);
+  const [search, setSearch] = useState(initialSearch);
+  const { requested: query, attempt, tasks: searchTasks } = search;
+  const changeQuery = useCallback((value: string) => {
+    setSearch((current) => searchStarted(current, value));
+  }, []);
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [projectDialog, setProjectDialog] = useState<{
     project?: Project;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<string | null>(null);
+  const copyMessage = useRef<ReturnType<typeof createTransientMessage> | null>(
+    null,
+  );
+  useEffect(() => {
+    const message = createTransientMessage({
+      show: setCopyStatus,
+      durationMs: 2500,
+    });
+    copyMessage.current = message;
+    return () => {
+      message.dispose();
+      copyMessage.current = null;
+    };
+  }, []);
   const [retryTaskId, setRetryTaskId] = useState<string | null>(null);
   const [closing, setClosing] = useState(false);
   const focusBeforeClose = useRef<HTMLElement | null>(null);
@@ -143,9 +176,12 @@ export function App() {
               ),
             },
         );
-        setResults((current) =>
-          current.map((item) => (item.id === task.id ? task : item)),
-        );
+        setSearch((current) => ({
+          ...current,
+          tasks: current.tasks.map((item) =>
+            item.id === task.id ? task : item,
+          ),
+        }));
       },
       delayMs: 450,
     });
@@ -175,24 +211,29 @@ export function App() {
       .catch(showError);
   }, []);
 
-  useEffect(() => {
-    if (!query.trim()) {
-      setResults([]);
-      return;
-    }
-    const timer = window.setTimeout(
-      () => api.search(query).then(setResults).catch(showError),
-      180,
-    );
-    return () => window.clearTimeout(timer);
-  }, [query]);
-
   const showError = useCallback((reason: unknown) => {
     setRetryTaskId(null);
     setError(
       reason instanceof Error ? reason.message : "Something went wrong.",
     );
   }, []);
+  useEffect(() => {
+    if (!query.trim()) return;
+    let live = true;
+    const timer = window.setTimeout(() => {
+      void api.search(query).then(
+        (tasks) =>
+          setSearch((current) => searchResolved(current, attempt, tasks)),
+        (reason) => {
+          if (live) showError(reason);
+        },
+      );
+    }, 180);
+    return () => {
+      live = false;
+      window.clearTimeout(timer);
+    };
+  }, [attempt, query, showError]);
   const active = data?.activeTasks ?? [];
   const archived = data?.archivedTasks ?? [];
   const deleted = data?.deletedTasks ?? [];
@@ -203,10 +244,34 @@ export function App() {
         : view === "deleted"
           ? deleted
           : view === "search"
-            ? results
+            ? searchTasks
             : active;
     return source.filter((task) => selectedProjects.includes(task.projectId));
-  }, [active, archived, deleted, results, selectedProjects, view]);
+  }, [active, archived, deleted, searchTasks, selectedProjects, view]);
+  const copyState = copyAvailability({
+    frozen: coordinator.frozen(),
+    searchSettled: searchSettled(view, search),
+    selectedProjectCount: selectedProjects.length,
+    taskCount: visibleTasks.length,
+  });
+  function copyAsMarkdown() {
+    if (!data || coordinator.frozen()) return;
+    void copyVisibleTasks({
+      availability: copyState,
+      input: () => ({
+        view,
+        query,
+        projects: data.projects,
+        selectedProjectIds: selectedProjects,
+        tasks: visibleTasks.map((task) =>
+          toExportTask(task, coordinator.draft(task.id)),
+        ),
+      }),
+      write: systemClipboard(navigator),
+      onCopied: (message) => copyMessage.current?.post(message),
+      onFailed: (message) => showError(new Error(message)),
+    });
+  }
   const selected =
     [...active, ...archived, ...deleted].find(
       (task) => task.id === selectedId,
@@ -283,7 +348,7 @@ export function App() {
       );
       if (!shortcut) return;
       if (shortcut === "clear-search") {
-        setQuery("");
+        changeQuery("");
         if (query) setView("active");
         return;
       }
@@ -302,7 +367,15 @@ export function App() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [coordinator, dialogOpen, query, selected, view, visibleTasks]);
+  }, [
+    changeQuery,
+    coordinator,
+    dialogOpen,
+    query,
+    selected,
+    view,
+    visibleTasks,
+  ]);
 
   async function changeSelection(next: string[]) {
     if (coordinator.frozen()) return;
@@ -548,7 +621,7 @@ export function App() {
     }
   }
   function runSearch(value: string) {
-    setQuery(value);
+    changeQuery(value);
     setView(value.trim() ? "search" : "active");
   }
 
@@ -604,7 +677,7 @@ export function App() {
               }`}
               onClick={() => {
                 setView("archive");
-                setQuery("");
+                changeQuery("");
               }}
               {...dropTargetProps("archive")}
             >
@@ -618,7 +691,7 @@ export function App() {
               }`}
               onClick={() => {
                 setView("deleted");
-                setQuery("");
+                changeQuery("");
               }}
               {...dropTargetProps("trash")}
             >
@@ -708,7 +781,19 @@ export function App() {
                         : "What’s next"}
                 </h1>
               </div>
-              <span className="count">{visibleTasks.length}</span>
+              <div className="pane-actions">
+                <span className="count">{visibleTasks.length}</span>
+                <button
+                  type="button"
+                  className="icon-button"
+                  aria-label="Copy as Markdown"
+                  title={copyState.ok ? "Copy as Markdown" : copyState.reason}
+                  disabled={!copyState.ok}
+                  onClick={copyAsMarkdown}
+                >
+                  <ClipboardCopy size={16} aria-hidden="true" />
+                </button>
+              </div>
             </div>
             <TaskList
               tasks={visibleTasks}
@@ -742,6 +827,14 @@ export function App() {
             )}
           </section>
         </div>
+        <output className="copy-status">
+          {!closing && copyStatus && (
+            <>
+              <Check size={16} aria-hidden="true" />
+              {copyStatus}
+            </>
+          )}
+        </output>
         {error && (
           <div className="toast" role="alert">
             {error}
@@ -1067,11 +1160,6 @@ function TaskEditor({
       )}
     </div>
   );
-}
-
-function fieldsOf(task: Task): Fields {
-  const { title, projectId, description, scratchpad } = task;
-  return { title, projectId, description, scratchpad };
 }
 
 function ReadOnlySection({ title, value }: { title: string; value: string }) {
