@@ -248,20 +248,27 @@ export function App() {
             : active;
     return source.filter((task) => selectedProjects.includes(task.projectId));
   }, [active, archived, deleted, searchTasks, selectedProjects, view]);
-  const copyState = copyAvailability({
-    frozen: coordinator.frozen(),
-    searchSettled: searchSettled(view, search),
-    selectedProjectCount: selectedProjects.length,
-    taskCount: visibleTasks.length,
-  });
-  function copyAsMarkdown() {
-    if (!data || coordinator.frozen()) return;
+  const frozen = coordinator.frozen();
+  const settledSearch = searchSettled(view, search);
+  const copyState = useMemo(
+    () =>
+      copyAvailability({
+        frozen,
+        searchSettled: settledSearch,
+        selectedProjectCount: selectedProjects.length,
+        taskCount: visibleTasks.length,
+      }),
+    [frozen, settledSearch, selectedProjects.length, visibleTasks.length],
+  );
+  const projects = data?.projects;
+  const copyAsMarkdown = useCallback(() => {
+    if (!projects || coordinator.frozen()) return;
     void copyVisibleTasks({
       availability: copyState,
       input: () => ({
         view,
         query,
-        projects: data.projects,
+        projects,
         selectedProjectIds: selectedProjects,
         tasks: visibleTasks.map((task) =>
           toExportTask(task, coordinator.draft(task.id)),
@@ -271,7 +278,16 @@ export function App() {
       onCopied: (message) => copyMessage.current?.post(message),
       onFailed: (message) => showError(new Error(message)),
     });
-  }
+  }, [
+    coordinator,
+    copyState,
+    projects,
+    query,
+    selectedProjects,
+    showError,
+    view,
+    visibleTasks,
+  ]);
   const selected =
     [...active, ...archived, ...deleted].find(
       (task) => task.id === selectedId,
@@ -337,6 +353,7 @@ export function App() {
         {
           key: event.key,
           ctrlKey: event.ctrlKey,
+          shiftKey: event.shiftKey,
           onEditableField: isEditingTarget(event.target),
         },
         {
@@ -355,6 +372,7 @@ export function App() {
       event.preventDefault();
       if (shortcut === "new-task") setNewTaskOpen(true);
       if (shortcut === "focus-search") searchRef.current?.focus();
+      if (shortcut === "copy-markdown") copyAsMarkdown();
       if (!selected) return;
       if (shortcut === "edit-title") titleRef.current?.focus();
       if (shortcut === "complete") complete(selected);
@@ -370,6 +388,7 @@ export function App() {
   }, [
     changeQuery,
     coordinator,
+    copyAsMarkdown,
     dialogOpen,
     query,
     selected,
@@ -787,7 +806,11 @@ export function App() {
                   type="button"
                   className="icon-button"
                   aria-label="Copy as Markdown"
-                  title={copyState.ok ? "Copy as Markdown" : copyState.reason}
+                  title={
+                    copyState.ok
+                      ? "Copy as Markdown (Ctrl+Shift+C)"
+                      : copyState.reason
+                  }
                   disabled={!copyState.ok}
                   onClick={copyAsMarkdown}
                 >

@@ -7,10 +7,16 @@ const browsing: ShortcutState = {
   hasSelection: true,
   view: "active",
 };
-const key = (key: string, ctrlKey = false, onEditableField = false) => ({
+const key = (
+  key: string,
+  ctrlKey = false,
+  onEditableField = false,
+  shiftKey = false,
+) => ({
   key,
   ctrlKey,
   onEditableField,
+  shiftKey,
 });
 
 it("leaves Enter on a focused dialog button to the button while a task is selected", () => {
@@ -27,6 +33,8 @@ it("takes no global shortcut at all while a dialog is open", () => {
     key("Escape"),
     key("n", true),
     key("f", true),
+    key("C", true, false, true),
+    key("c", true, false, true),
     key("ArrowUp", true),
     key("ArrowDown", true),
   ]) {
@@ -50,7 +58,28 @@ it("leaves Enter and Delete to editable fields", () => {
 });
 
 it("takes no shortcut while closing freezes the window", () => {
-  expect(shortcutFor(key("n", true), { ...browsing, frozen: true })).toBe(null);
+  const frozen = { ...browsing, frozen: true };
+  expect(shortcutFor(key("n", true), frozen)).toBe(null);
+  expect(shortcutFor(key("C", true, false, true), frozen)).toBe(null);
+  expect(shortcutFor(key("c", true, false, true), frozen)).toBe(null);
+});
+
+it.each(["active", "archive", "deleted", "search"] as const)(
+  "copies Markdown in the %s view without requiring a task selection",
+  (view) => {
+    const state = { ...browsing, view, hasSelection: false };
+    expect(shortcutFor(key("C", true, false, true), state)).toBe(
+      "copy-markdown",
+    );
+    expect(shortcutFor(key("c", true, true, true), state)).toBe(
+      "copy-markdown",
+    );
+  },
+);
+
+it("leaves plain Ctrl+C and Shift+C alone", () => {
+  expect(shortcutFor(key("c", true, true), browsing)).toBe(null);
+  expect(shortcutFor(key("C", false, true, true), browsing)).toBe(null);
 });
 
 it("only edits or completes where the selected task is active", () => {

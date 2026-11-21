@@ -3,6 +3,7 @@ import type { View } from "./App";
 export type Shortcut =
   | "new-task"
   | "focus-search"
+  | "copy-markdown"
   | "clear-search"
   | "edit-title"
   | "complete"
@@ -12,6 +13,7 @@ export type Shortcut =
 export type ShortcutKey = {
   key: string;
   ctrlKey: boolean;
+  shiftKey: boolean;
   /** Focus is in a text input, textarea or select that handles the key itself. */
   onEditableField: boolean;
 };
@@ -33,6 +35,8 @@ export function shortcutFor(
   const key = event.key;
   if (event.ctrlKey && key.toLowerCase() === "n") return "new-task";
   if (event.ctrlKey && key.toLowerCase() === "f") return "focus-search";
+  if (event.ctrlKey && event.shiftKey && key.toLowerCase() === "c")
+    return "copy-markdown";
   if (key === "Escape") return "clear-search";
   if (!state.hasSelection) return null;
   if (
