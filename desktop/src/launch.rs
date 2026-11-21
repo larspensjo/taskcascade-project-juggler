@@ -133,7 +133,7 @@ fn run_inner(
             ),
         )
     };
-    let location = data_location::resolve(&inputs).map_err(&describe_location_failure)?;
+    let location = data_location::resolve(&inputs).map_err(describe_location_failure)?;
     *database = location.database.display().to_string();
     let identity = identity::identity_for(&location);
     let canonical_database = data_location::filesystem_identity(&location.database)

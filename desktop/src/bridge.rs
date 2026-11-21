@@ -33,7 +33,7 @@ impl Drop for InFlightGuard<'_> {
 impl InFlight {
     pub fn track(&self) -> Option<InFlightGuard<'_>> {
         self.state
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |state| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |state| {
                 (state & STOPPED == 0).then_some(state + 1)
             })
             .ok()
