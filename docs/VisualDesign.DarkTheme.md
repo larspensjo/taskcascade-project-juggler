@@ -8,3 +8,4 @@ TaskCascade uses a calm, dense workspace rather than a marketing surface. The sh
 - Completion is `#16c784`, applied sparingly as an icon/text signal.
 - Use Inter for prose/UI and JetBrains Mono for ordering/counts. Panels use hairlines and surface steps instead of shadows; overlays are the exception.
 - Keep actions compact and keyboard discoverable. Primary buttons are pills, list rows are rounded but dense, and task ordering remains visually prominent.
+- Transient confirmations dismiss automatically and use `--surface-1`, a hairline border, secondary text and a completion-green icon. Errors use the danger toast.

@@ -214,6 +214,17 @@ Filtering does not change task ordering.
 
 ---
 
+## Copy as Markdown
+
+The user can copy the visible tasks to the clipboard as Markdown using the task
+pane button or Ctrl+Shift+C. The document names the current view (active,
+archive, deleted or search) and project filter and lists the tasks in on-screen
+order. Each task includes its title, description and scratchpad as shown in the
+editor, including unsaved edits. Empty descriptions and scratchpads are marked
+as empty. Copying is read-only and writes to the clipboard.
+
+---
+
 # Persistence
 
 All changes are saved immediately.
@@ -242,6 +253,7 @@ Minimum shortcuts:
 | Ctrl+Down | Move task down |
 | Delete | Complete selected task |
 | Ctrl+F | Search |
+| Ctrl+Shift+C | Copy visible tasks as Markdown |
 | Escape | Cancel current edit |
 
 ---
@@ -306,5 +318,5 @@ No server, network port, hosting or account required.
 - AI-assisted task summarization
 - AI-assisted scratchpad cleanup
 - Task history
-- Export / Import
+- Import
 ```

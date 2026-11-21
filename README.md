@@ -42,6 +42,7 @@ Run Cargo commands from the repository root: `cargo test --workspace`, `cargo cl
 - Drag tasks onto Archive in the sidebar to complete them into a read-only searchable archive
 - Drag tasks onto Deleted to trash them and drag them back out to restore; deleted tasks are kept out of search but never destroyed
 - Search across task titles, descriptions, scratchpads, active work, and archive
+- Copy the visible tasks in the current view and project filter to the clipboard as Markdown (Ctrl+Shift+C)
 - Automatic local persistence and restoration of the project filter and window placement
 
 See [the requirements](docs/RequirementSpecification.md), [architecture](docs/Design.HighLevel.md), and [decision log](docs/DecisionLog.md).
